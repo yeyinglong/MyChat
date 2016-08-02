@@ -1,0 +1,4 @@
+*.o
+mychat
+chatservice
+.vscode
