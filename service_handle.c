@@ -47,6 +47,13 @@ const char LIST_RES[]={
 	"</xml>"
 };
 
+const char ALIVE_RES[]={
+	"<xml>"
+	"<CMD>Alive</CMD>"
+	"<ERROR>%s</ERROR>"
+	"</xml>"
+};
+
 #define COUNTOF(x) (sizeof(x)/sizeof((x)[0]))
 #define SEND_BUF_SIZE 1024
 #define RECV_BUF_SIZE 1024
@@ -196,7 +203,7 @@ int user_login(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 		{
 			LOG_INFO("%s has loged", fromUser);
 			sprintf(sendbuf,LOGIN_RES,"loged");
-			if((send(pcht->pclt->fd, sendbuf, strlen(sendbuf), 0)) == -1)
+			if((send(pclt->fd, sendbuf, strlen(sendbuf), 0)) == -1)
 			{
 				LOG_ERR("%s:%d send",__func__,__LINE__);
 			}
@@ -211,7 +218,7 @@ int user_login(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 		strcpy(pcht->userName, (char *)fromUser);
 		list_add_head(&(pcht->entry),&head);
 		sprintf(sendbuf,LOGIN_RES,"success");
-		if((send(pcht->pclt->fd, sendbuf, strlen(sendbuf), 0)) == -1)
+		if((send(pclt->fd, sendbuf, strlen(sendbuf), 0)) == -1)
 		{
 			LOG_ERR("%s:%d send",__func__,__LINE__);
 		}
@@ -270,6 +277,16 @@ int user_ReqList(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 	return 0;
 }
 
+int user_Alive(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
+{
+	sprintf(sendbuf, ALIVE_RES, "success");
+	if(send(pclt->fd, sendbuf, strlen(sendbuf), 0) < 0)
+	{
+		LOG_ERR("%s:%d send",__func__,__LINE__);
+	}
+	return 0;
+}
+
 typedef struct
 {
 	const char *cmd;
@@ -281,6 +298,7 @@ chat_handle_t chat_handle_table[] = {
 	{"Login", user_login},
 	{"Logout", user_logout},
 	{"ReqList", user_ReqList},
+	{"Alive", user_Alive},
 };
 
 /*socket 接收数据事件， 返回-1关闭服务器*/
@@ -318,13 +336,13 @@ int recv_handler(pClient pclt, char *recvbuf,int recvlen)
 		xmlChar *cmd = NULL; 
 		fromUser = xmlGetNodeText(doc, cur, "FromUser");
 		if(fromUser == NULL)
-			return 0;
+			goto recv_handler_release;
 		cur = cur->next;
 		cmd = xmlGetNodeText(doc, cur, "CMD");
 		if(cmd == NULL)
 		{
 			xmlFree(fromUser);
-			return 0;
+			goto recv_handler_release;
 		}
 		LOG_INFO("FromUser:%s CMD:%s", fromUser, cmd);
 		int i;

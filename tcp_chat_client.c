@@ -39,11 +39,12 @@ static int sockfd;
 
 /************一套输入指令:
 *************logout : 登出当前账号
-*************login ：登陆账号
+*************login ：在LOGOUT状态下登陆账号
 *************show list : 显示当前在线用户
 *************chat %s,friendname : 选择聊天对象
-*************msg %s:输入msg 加聊天的内容，将内容和聊天对象发送给服务器
-
+*************%s:在CHAT状态下输入聊天的内容，将内容和聊天对象发送给服务器
+*************regist : 在LOGOUT状态下注册账号
+*************quit : 在LOGOUT状态退出程序
 
 *************/
 
@@ -97,6 +98,7 @@ int cleanup(void);
 
 void *client_alive(void *);   //线程函数，用于定时向服务器发送信息
 int load_user();     //用于登陆账号
+int regist_user();   //注册账号
 
 // typedef int (*xml_handle_t)(xmlDocPtr, xmlNodePtr);
 // xml_handle_t xml_handle_table[] = {
@@ -112,8 +114,10 @@ typedef struct{
 }xml_handler_t;
 
 xml_handler_t xml_handler_table[5] = {
-	{"msg",recv_message},{"res",send_res},\
-	{"Login",login_res},{"Logout",logout_res},\
+	{"msg",recv_message},
+	{"res",send_res},
+	{"Login",login_res},
+	{"Logout",logout_res},
 	{"ReqList",list_res}
 };
 
@@ -159,16 +163,18 @@ int main(void)
 	pthread_detach(tid_alive);
 	
 	
-	//在服务器上登陆账号
-	if(load_user() !=0)
-	{
-		printf("load user error!\n");
-		close(sockfd);
-		exit(1);
-	}
-	sprintf(sendbuf, LOGIN_MSG, username);
-    send(sockfd, sendbuf, strlen(sendbuf), 0);
-	user_status = U_ST_LOGIN;
+	// //在服务器上登陆账号
+	// if(load_user() !=0)
+	// {
+	// 	printf("load user error!\n");
+	// 	user_status = U_ST_LOGOUT;
+	// }
+	// else
+	// {
+	// 	sprintf(sendbuf, LOGIN_MSG, username);
+	// 	send(sockfd, sendbuf, strlen(sendbuf), 0);
+	// 	user_status = U_ST_LOGIN;
+	// }
    
     fds[0].fd = 0;
     fds[0].events = POLLIN;
@@ -270,56 +276,140 @@ when_getmessage:
 		if(user_status != U_ST_LOGOUT && user_status != U_ST_LOGING)
 			goto when_getmessage; 
 		char *this_status[4] = {"logout","login","loging","chat"};
-		printf("user_status:%s",this_status[user_status]);
-		printf("input login to login again or quit to exit\n");
+		printf("user_status:%s\n",this_status[user_status]);
+		printf("input login to login again ,regist to register a new account or quit to exit\n");
 		fgets(stdinbuf,sizeof(stdinbuf),stdin);
 		stdinbuf[strlen(stdinbuf)-1] = '\0';
 		if(strncmp(stdinbuf,"login",strlen("login")) ==0)
-			load_user();
+		{
+			if(load_user() == 0)
+			{
+				sprintf(sendbuf, LOGIN_MSG, username);
+				send(sockfd, sendbuf, strlen(sendbuf), 0);
+				user_status = U_ST_LOGIN;
+			}
+		}
+		else if(strncmp(stdinbuf,"regist",strlen("regist")) == 0)
+			regist_user();
 		else if(strncmp(stdinbuf,"quit",strlen("quit")) == 0)
 			break;
 	}
+	pthread_cancel(tid_alive);
 	close(sockfd);
 	exit(0);
 }
 
 int load_user()
-{
-	printf("username:\n");
-	fgets(username,sizeof(username),stdin);
-	username[strlen(username)-1] = '\0';
-	
+{	
+	char passwd[32];
     while(1)
     {
+		printf("username:");
+		fgets(username,sizeof(username),stdin);
+		username[strlen(username)-1] = '\0';
+
+		bzero(stdinbuf,sizeof(stdinbuf));
 		printf("passwd:");
-        fgets(stdinbuf, 128, stdin);
+        fgets(passwd, 32, stdin);
+		passwd[strlen(passwd)-1] = '\0';
+
         sprintf(sqlcmd, "select passwd from user where UserName='%s'", username);
         mysql_query_my(conn, sqlcmd);
         MYSQL_RES *res = mysql_store_result(conn);
         if(res==NULL)
 		{
-			printf("this username hasn't regist!\n");
-			bzero(username,sizeof(username));
-			load_user();
+			printf("load user error!\n");
+			exit(1);
 		}
 		else
 		{
 			MYSQL_ROW row = mysql_fetch_row(res);
 			if(row!= NULL)
 			{
-				if(strncmp((char *)row[0],stdinbuf,strlen(stdinbuf)-1) != 0) 
+				if(strncmp((char *)row[0],passwd,strlen(row[0])) != 0) 
 				{
 					printf("passwd error!please input agian\n");
 					continue;
 				}
 				else break;
-			}				
-		}
-		
+			}
+			else
+			{
+				printf("this username hasn't regist!\n");
+				bzero(username,sizeof(username));
+				continue;
+			}
+		}		
     }	
 	return 0;
 }
 
+int regist_user()
+{
+	char regist_username[32] = {0}; 
+	char regist_password[32] = {0};
+	MYSQL_RES *res;
+	mysql_ping(conn);
+	printf("regist username :");
+	fgets(stdinbuf,sizeof(stdinbuf),stdin);
+	stdinbuf[strlen(stdinbuf)-1] = '\0';
+	stdinbuf[31] = '\0';
+	char *str1 = strtok(stdinbuf," ");
+	strcpy(regist_username,str1);
+	bzero(stdinbuf,sizeof(stdinbuf));
+	
+	bzero(sqlcmd,sizeof(sqlcmd));
+	sprintf(sqlcmd, "select * from user where UserName='%s'", regist_username);
+	mysql_query_my(conn,sqlcmd);
+	res = mysql_store_result(conn);
+	if(res != NULL)
+	{
+		MYSQL_ROW row = mysql_fetch_row(res);
+		if(row != NULL)
+		{
+			if(strncmp(row[0],regist_username,strlen(regist_username)) ==0)
+			{
+				printf("regist error! this username has registed!\n");
+				return -1;
+			}
+		}
+	}
+	else
+	{
+		printf("regist error!\n");
+		return -1;
+	}
+	printf("regist password :");
+	fgets(stdinbuf,sizeof(stdinbuf),stdin);
+	stdinbuf[strlen(stdinbuf)-1] = '\0';
+	stdinbuf[31] = '\0';
+	char *str2 = strtok(stdinbuf," ");
+	
+	bzero(stdinbuf,sizeof(stdinbuf));
+	printf("confirm password : ");
+	fgets(stdinbuf,sizeof(stdinbuf),stdin);
+	stdinbuf[strlen(stdinbuf)-1] = '\0';
+	stdinbuf[31] = '\0';
+	char *str3 = strtok(stdinbuf," ");
+	if(strcmp(str2,str3) == 0)
+		strcpy(regist_password,str2);
+	else
+	{
+		printf("password is different!\n");
+		return -1;
+	}
+	bzero(sqlcmd,sizeof(sqlcmd));
+	sprintf(sqlcmd,"insert into user values('%s','%s')",regist_username,regist_password);
+	mysql_query_my(conn,sqlcmd);
+	//res = mysql_store_result(conn);
+	// if(res == NULL)
+	// {
+		// printf("unkonwn error! regist error!\n");
+		// return -1;
+	// }
+	printf("regist success!\n");
+	return 0;	
+}
 
 /*客户端启动时调用函数*/
 int startup_handler(void)
@@ -350,12 +440,14 @@ int mysql_query_my(MYSQL *conn, const char *str)
 void *client_alive(void *arg)
 {
 	char alive_buf[BUFFER_SIZE] = {0};
+	sprintf(alive_buf,ALIVE_MSG,username);
 	while(1)
 	{
-		sprintf(alive_buf,ALIVE_MSG,username);
-		send(sockfd,alive_buf,strlen(alive_buf),0);
-		bzero(alive_buf,sizeof(alive_buf));
 		sleep(300);
+		if(user_status == U_ST_LOGIN || user_status == U_ST_CHAT)
+		{
+			send(sockfd,alive_buf,strlen(alive_buf),0);
+		}
 	}
 	return (void *)0;
 }
@@ -407,7 +499,7 @@ int login_res(xmlDocPtr doc, xmlNodePtr cur)
 	if(error == NULL)
 		return -1;
 	printf("%s\n",error);
-	if(strncpy((char *)error,"login error",strlen("login error"))==0)
+	if(strncmp((char *)error,"loged",strlen("loged"))==0)
 		user_status = U_ST_LOGOUT;
 	free(error);
 	return 0;
