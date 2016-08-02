@@ -165,13 +165,17 @@ int transmit_msg(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 				strcpy(res, "SendError");
 				break;
 			}
-			if((recv(pcht->pclt->fd, recvbuf, RECV_BUF_SIZE, 0)))
+			if((recv(pcht->pclt->fd, recvbuf, RECV_BUF_SIZE, 0)) < 0)
 			{
 				LOG_ERR("%s:%d recv",__func__,__LINE__);
 				strcpy(res, "RespondError");
 			}
 			break;
 		}
+	}
+	if(pos ==  &head)
+	{
+		strcpy(res, "friendLogout");
 	}
 	sprintf(sendbuf, SEND_RES, res);
 	if(send(pclt->fd, sendbuf, strlen(sendbuf), 0) < 0)

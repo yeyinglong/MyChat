@@ -79,9 +79,10 @@ const char REQLIST[]={
 };
 
 const char ALIVE_MSG[]={
-	"xml"
+	"<xml>"
 	"<FromUser>%s</FromUser>"
 	"<CMD>Alive</CMD>"
+	"</xml>"
 };
 
 int startup_handler(void);
@@ -194,7 +195,7 @@ when_getmessage:
 				sprintf(sendbuf,REQLIST,username);
 				send(sockfd,sendbuf,strlen(sendbuf),0);
 			}
-			else if(strncmp(stdinbuf,"chat",strlen("chat")) == 0)
+			else if(strncmp(stdinbuf,"chat",strlen("chat")) == 0) //chat name
 			{
 				strtok(stdinbuf," ");
 				char *str;
@@ -208,23 +209,17 @@ when_getmessage:
 					user_status = U_ST_CHAT;
 				}
 			}
-			else if(user_status == U_ST_CHAT || strncmp(stdinbuf,"msg",strlen("msg")) == 0)
+			else
 			{
-				strtok(stdinbuf," ");
-				char *str;
-				if((str = strtok(NULL," ")) == NULL)
+				if(user_status == U_ST_CHAT)
 				{
-					printf("please input the message you want to send\n");
+					sprintf(sendbuf,SEND_MSG,username,friendname,stdinbuf);
+					send(sockfd,sendbuf,strlen(sendbuf),0);
 				}
 				else
 				{
-					sprintf(sendbuf,SEND_MSG,username,friendname,str);
-					send(sockfd,sendbuf,strlen(sendbuf),0);
+					printf("please choose you friend to chat whih!\n");
 				}
-			}
-			else
-			{
-				printf("pleace input using currect instructions!\n");
 			}
         }
         if(fds[1].revents & POLLRDNORM)
@@ -383,7 +378,7 @@ int recv_message(xmlDocPtr doc, xmlNodePtr cur)
 		free(fromuser);
 		return -1;
 	}
-	if(xmlStrcmp(cur->name,(const xmlChar *)"Contex"))
+	if(xmlStrcmp(cur->name,(const xmlChar *)"Context"))
 	{
 		free(fromuser);
 		return -1;
@@ -395,6 +390,7 @@ int recv_message(xmlDocPtr doc, xmlNodePtr cur)
 		return -1;
 	}
 	printf("%s : %s\n",fromuser,contex);               //获取收到的信息
+	send(sockfd, "received", strlen("received"), 0);
 	free(contex);
 	free(fromuser);
 	return 0;
