@@ -20,7 +20,7 @@ $(TARGETS):$(OBJS)
 	$(CC) -o $@ $^ -L /usr/lib/i386-linux-gun -lxml2 -lmysqlclient
 	
 $(TARGETC):$(OBJC)
-	$(CC) -o $@ $^ -L /usr/lib/i386-linux-gun -lxml2 -lmysqlclient
+	$(CC) -o $@ $^   -L /usr/lib/i386-linux-gun -lxml2 -lmysqlclient -lpthread
 
 cservice:  
 	rm -rf $(TARGETS) $(OBJS)

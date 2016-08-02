@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <poll.h>
+#include <pthread.h>
 
 #include <libxml/parser.h>  
 #include <libxml/xmlmemory.h>
@@ -27,6 +28,25 @@ char recvbuf[BUFFER_SIZE];
 char stdinbuf[128];
 char sqlcmd[BUFFER_SIZE];
 MYSQL *conn;       //数据库
+char username[32];
+static int user_status;
+static int sockfd;
+#define U_ST_LOGIN 1  //已登录
+#define U_ST_LOGOUT 0  //未登录
+#define U_ST_LOGING 2   //正在登陆
+#define U_ST_CHAT 3   //正在聊天   
+
+
+/************一套输入指令:
+*************logout : 登出当前账号
+*************login ：登陆账号
+*************show list : 显示当前在线用户
+*************chat %s,friendname : 选择聊天对象
+*************msg %s:输入msg 加聊天的内容，将内容和聊天对象发送给服务器
+
+
+*************/
+
 
 const char SEND_MSG[]={
 	"<xml>"
@@ -51,55 +71,68 @@ const char LOGOUT_MSG[]={
     "</xml>"
 };
 
-const char ERQLIST[]={
+const char REQLIST[]={
     "<xml>"
     "<FromUser>%s</FromUser>"
     "<CMD>ReqList</CMD>"
     "</xml>"
 };
 
+const char ALIVE_MSG[]={
+	"xml"
+	"<FromUser>%s</FromUser>"
+	"<CMD>Alive</CMD>"
+};
+
 int startup_handler(void);
 int mysql_query_my(MYSQL *conn, const char *str);
 int recv_message(xmlDocPtr, xmlNodePtr);
 int login_res(xmlDocPtr doc, xmlNodePtr cur);
+int send_res(xmlDocPtr doc, xmlNodePtr cur);
+int logout_res(xmlDocPtr doc, xmlNodePtr cur);
+int list_res(xmlDocPtr doc, xmlNodePtr cur);
+int cleanup(void);
 
-typedef int (*xml_handle_t)(xmlDocPtr, xmlNodePtr);
-xml_handle_t xml_handle_table[] = {
-	recv_message,
-    login_res
+
+void *client_alive(void *);   //线程函数，用于定时向服务器发送信息
+int load_user();     //用于登陆账号
+
+// typedef int (*xml_handle_t)(xmlDocPtr, xmlNodePtr);
+// xml_handle_t xml_handle_table[] = {
+	// recv_message,
+    // login_res
+// };
+
+typedef int (*pfun)(xmlDocPtr,xmlNodePtr);
+
+typedef struct{
+	char operator[32];
+	pfun func;
+}xml_handler_t;
+
+xml_handler_t xml_handler_table[5] = {
+	{"msg",recv_message},{"res",send_res},\
+	{"Login",login_res},{"Logout",logout_res},\
+	{"ReqList",list_res}
 };
 
-int main(int argc, char *argv[])
+int main(void)
 {
-	int sockfd;
-    struct pollfd fds[2]={0};
+    struct pollfd fds[2];
 	struct hostent *host;
 	struct sockaddr_in serv_addr;
-
-	if(argc<2)
-	{
-		fprintf(stderr,"USAGE: ./tcp_chat_client YourName\n");
-		exit(1);
-	}
-
+	char friendname[32] = {0};
+	
+	user_status = U_ST_LOGOUT;
+	
     startup_handler();
-
-    printf("passwd:\n");
-    while(1)
-    {
-        fgets(stdinbuf, 128, stdin);
-        sprintf(sqlcmd, "select passwd from user where UserName='%s'", argv[1]);
-        mysql_query_my(conn, sqlcmd);
-        MYSQL_RES *res = mysql_store_result(conn);
-        if(res) break;
-    }
-
-	if((host = gethostbyname("yeyl.site"))==NULL)
+	
+	if((host = gethostbyname("localhost"))==NULL)
 	{
 		perror("gethostbyname");
 		exit(1);
 	}
-
+	
 	/*创建socket*/
 	if((sockfd=socket(AF_INET,SOCK_STREAM,0))==-1)
 	{
@@ -118,32 +151,81 @@ int main(int argc, char *argv[])
 	{
 		perror("connect");
 		exit(1);
+	}	
+	//建立保活线程
+	pthread_t tid_alive;
+	pthread_create(&tid_alive,NULL,client_alive,NULL);
+	pthread_detach(tid_alive);
+	
+	
+	//在服务器上登陆账号
+	if(load_user() !=0)
+	{
+		printf("load user error!\n");
+		close(sockfd);
+		exit(1);
 	}
-
+	sprintf(sendbuf, LOGIN_MSG, username);
+    send(sockfd, sendbuf, strlen(sendbuf), 0);
+	user_status = U_ST_LOGIN;
+   
     fds[0].fd = 0;
     fds[0].events = POLLIN;
     fds[1].fd = sockfd;
     fds[1].events = POLLRDNORM;
 
-    sprintf(sendbuf, LOGIN_MSG, argv[1]);
-    send(sockfd, sendbuf, strlen(sendbuf), 0);
-
-    while(1)
+when_getmessage:
+	while(user_status != U_ST_LOGOUT)
     {
+		bzero(sendbuf,sizeof(sendbuf));
         poll(fds, 2, 4000);
         if(fds[0].revents & POLLIN)
         {
-            fgets(stdinbuf,128,stdin);
-            stdinbuf[strlen(stdinbuf)-1]=0;
-            if(stdinbuf != strstr(stdinbuf, "exit"))
-            {
-                sprintf(sendbuf, SEND_MSG, argv[1], "All",stdinbuf);
-                send(sockfd, sendbuf, strlen(sendbuf), 0);
-            }
-            else
-            {
-                shutdown(sockfd, SHUT_WR);
-            }
+			fgets(stdinbuf,sizeof(stdinbuf),stdin);
+			stdinbuf[strlen(stdinbuf)-1] = '\0';
+			if(strncmp(stdinbuf,"logout",strlen("logout")) ==0)
+			{
+				sprintf(sendbuf,LOGOUT_MSG,username);
+				send(sockfd,sendbuf,strlen(sendbuf),0);
+				user_status = U_ST_LOGOUT;	
+			}
+			else if(strncmp(stdinbuf,"show list",strlen("show list")) == 0)
+			{
+				sprintf(sendbuf,REQLIST,username);
+				send(sockfd,sendbuf,strlen(sendbuf),0);
+			}
+			else if(strncmp(stdinbuf,"chat",strlen("chat")) == 0)
+			{
+				strtok(stdinbuf," ");
+				char *str;
+				if((str = strtok(NULL," ")) == NULL)
+				{
+					printf("please input the name you want to chat with!\n");
+				}
+				else
+				{
+					strcpy(friendname,str);
+					user_status = U_ST_CHAT;
+				}
+			}
+			else if(user_status == U_ST_CHAT || strncmp(stdinbuf,"msg",strlen("msg")) == 0)
+			{
+				strtok(stdinbuf," ");
+				char *str;
+				if((str = strtok(NULL," ")) == NULL)
+				{
+					printf("please input the message you want to send\n");
+				}
+				else
+				{
+					sprintf(sendbuf,SEND_MSG,username,friendname,str);
+					send(sockfd,sendbuf,strlen(sendbuf),0);
+				}
+			}
+			else
+			{
+				printf("pleace input using currect instructions!\n");
+			}
         }
         if(fds[1].revents & POLLRDNORM)
         {
@@ -176,18 +258,73 @@ int main(int argc, char *argv[])
             if((cur = cur->xmlChildrenNode) == NULL)
                 continue;
             int i;
-            for(i=0; i<COUNTOF(xml_handle_table); i++)
+            for(i=0; i<COUNTOF(xml_handler_table); i++)
             {
-                int ret = (xml_handle_table[i])(doc, cur);
-                if(ret >= 0)
-                    break;
+				xmlChar *cmd = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+				if(cmd == NULL)
+					continue;
+				if(strncmp(xml_handler_table[i].operator,(const char *)cmd,strlen(xml_handler_table[i].operator))==0)
+					xml_handler_table[i].func(doc,cur);
+				free(cmd);
             }
             xmlFreeDoc(doc);
         }
     }
+	while(1)
+	{
+		if(user_status != U_ST_LOGOUT && user_status != U_ST_LOGING)
+			goto when_getmessage; 
+		char *this_status[4] = {"logout","login","loging","chat"};
+		printf("user_status:%s",this_status[user_status]);
+		printf("input login to login again or quit to exit\n");
+		fgets(stdinbuf,sizeof(stdinbuf),stdin);
+		stdinbuf[strlen(stdinbuf)-1] = '\0';
+		if(strncmp(stdinbuf,"login",strlen("login")) ==0)
+			load_user();
+		else if(strncmp(stdinbuf,"quit",strlen("quit")) == 0)
+			break;
+	}
 	close(sockfd);
 	exit(0);
 }
+
+int load_user()
+{
+	printf("username:\n");
+	fgets(username,sizeof(username),stdin);
+	username[strlen(username)-1] = '\0';
+	
+    while(1)
+    {
+		printf("passwd:");
+        fgets(stdinbuf, 128, stdin);
+        sprintf(sqlcmd, "select passwd from user where UserName='%s'", username);
+        mysql_query_my(conn, sqlcmd);
+        MYSQL_RES *res = mysql_store_result(conn);
+        if(res==NULL)
+		{
+			printf("this username hasn't regist!\n");
+			bzero(username,sizeof(username));
+			load_user();
+		}
+		else
+		{
+			MYSQL_ROW row = mysql_fetch_row(res);
+			if(row!= NULL)
+			{
+				if(strncmp((char *)row[0],stdinbuf,strlen(stdinbuf)-1) != 0) 
+				{
+					printf("passwd error!please input agian\n");
+					continue;
+				}
+				else break;
+			}				
+		}
+		
+    }	
+	return 0;
+}
+
 
 /*客户端启动时调用函数*/
 int startup_handler(void)
@@ -196,7 +333,7 @@ int startup_handler(void)
 	char value = 1;
 	mysql_options(conn, MYSQL_OPT_RECONNECT, (char *)&value);
     //连接数据库
-    if (!mysql_real_connect(conn, "yeyl.site", "yeyl", "123456", "MyChat", 0, NULL, 0)) 
+    if (!mysql_real_connect(conn, "yeyl.site", "root", "201qyzx201", "MyChat", 0, NULL, 0)) 
     {
 		LOG_ERR_MYSQL(conn);
     }
@@ -215,53 +352,112 @@ int mysql_query_my(MYSQL *conn, const char *str)
 }
 
 
-int recv_message(xmlDocPtr doc, xmlNodePtr cur)
+void *client_alive(void *arg)
 {
-    xmlChar *fromuser = NULL;
-    xmlChar *context = NULL;
-    if((!xmlStrcmp(cur->name, (const xmlChar *)"FromUser")))
-    {
-        fromuser = xmlNodeListGetString(doc, cur->xmlChildrenNode, 1);
-    }
-    if((cur = cur->next) == NULL)
-		return -1;
-    if((!xmlStrcmp(cur->name, (const xmlChar *)"Context")))
-    {
-        context = xmlNodeListGetString(doc, cur->xmlChildrenNode, 1);
-    }
-    if(fromuser!=NULL && context!=NULL)
-    {
-        printf("%s:%s\n", fromuser, context);
-    }
-    xmlFree(fromuser);
-    xmlFree(context);
-    return 0;
+	char alive_buf[BUFFER_SIZE] = {0};
+	while(1)
+	{
+		sprintf(alive_buf,ALIVE_MSG,username);
+		send(sockfd,alive_buf,strlen(alive_buf),0);
+		bzero(alive_buf,sizeof(alive_buf));
+		sleep(300);
+	}
+	return (void *)0;
 }
 
+int recv_message(xmlDocPtr doc, xmlNodePtr cur)
+{
+	xmlChar *fromuser;
+	xmlChar *contex;
+	if((cur = cur->next) == NULL)
+		return -1;
+	if(xmlStrcmp(cur->name,(const xmlChar *)"FromUser"))
+		return -1;
+		
+	fromuser = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+	if(fromuser == NULL)
+		return -1;
+	
+	if((cur = cur->next) == NULL)
+	{
+		free(fromuser);
+		return -1;
+	}
+	if(xmlStrcmp(cur->name,(const xmlChar *)"Contex"))
+	{
+		free(fromuser);
+		return -1;
+	}
+	contex = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+	if(contex == NULL)
+	{
+		free(fromuser);
+		return -1;
+	}
+	printf("%s : %s\n",fromuser,contex);               //获取收到的信息
+	free(contex);
+	free(fromuser);
+	return 0;
+}
 int login_res(xmlDocPtr doc, xmlNodePtr cur)
 {
-    xmlChar *login_res = NULL;
-    if((!xmlStrcmp(cur->name, (const xmlChar *)"Login")))
-    {
-        login_res = xmlNodeListGetString(doc, cur->xmlChildrenNode, 1);
-    }
-    else
-    {
-        return -1;
-    }
-    if(login_res != NULL)
-    {
-        if(strcmp((char *)login_res, "success") == 0)
-        {
-            xmlFree(login_res);
-            printf("login success\n");
-            return 1;
-        }
-        else if(strcmp((char *)login_res, "loged") == 0)
-        {
-            printf("you has loged\n");
-        }
-    }
-    xmlFree(login_res);
-    return 0;
+	xmlChar *error;
+	if((cur = cur->next) == NULL)
+		return -1;
+	if(xmlStrcmp(cur->name,(const xmlChar *)"ERROR"))
+		return -1;
+	
+	error = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+	if(error == NULL)
+		return -1;
+	printf("%s\n",error);
+	if(strncpy((char *)error,"login error",strlen("login error"))==0)
+		user_status = U_ST_LOGOUT;
+	free(error);
+	return 0;
+}
+int send_res(xmlDocPtr doc, xmlNodePtr cur)
+{
+	xmlChar *error;
+	if((cur = cur->next) == NULL)
+		return -1;
+	if(xmlStrcmp(cur->name,(const xmlChar *)"ERROR"))
+		return -1;
+	
+	error = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+	if(error == NULL)
+		return -1;
+	printf("%s\n",error);
+	free(error);
+	return 0;
+}
+int logout_res(xmlDocPtr doc, xmlNodePtr cur)
+{
+	xmlChar *error;
+	if((cur = cur->next) == NULL)
+		return -1;
+	if(xmlStrcmp(cur->name,(const xmlChar *)"ERROR"))
+		return -1;
+	
+	error = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+	if(error == NULL)
+		return -1;
+	printf("%s\n",error);
+	free(error);
+	return 0;
+}
+int list_res(xmlDocPtr doc, xmlNodePtr cur)
+{
+	xmlChar *user_list;
+	if((cur = cur->next) == NULL)
+		return -1;
+	if(xmlStrcmp(cur->name,(const xmlChar *)"User"))
+		return -1;
+	user_list = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+	if(user_list == NULL)
+		return 0;
+	printf("%s\n",user_list);
+	send(sockfd,"OK",strlen("OK"),0);
+	free(user_list);
+	return 1;
 }
