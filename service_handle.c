@@ -238,8 +238,8 @@ int user_logout(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 		if(strcmp(pcht->userName, (const char*)fromUser) == 0)
 		{
 			list_del(pos);
-			free(pos);
-			pos = NULL;
+			free(pcht);
+			pcht = NULL;
 			break;
 		}
 	}
@@ -255,8 +255,47 @@ int user_logout(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 	return 0;
 }
 
+
+/*通过ss程序让用户下线*/
+int ss_QUITUSER(pClient pclt,xmlDocPtr doc,xmlNodePtr cur,xmlChar*fromss)
+{
+	char res[16] = "success";
+	cur = cur->next;
+	xmlChar *toUser = xmlGetNodeText(doc, cur, "ToUser");
+	if(toUser == NULL)
+		return 0;
+	LOG_INFO("ss try to kill %s", toUser);
+	struct list_head*pos,*tmpos;
+	list_for_each_safe(pos,tmpos,&head)
+	{
+		pcht=list_entry(pos,Chater,entry);
+		if(strcmp(pcht->userName,(const char*)toUser)==0)
+		{
+			list_del(pos);
+			free(pcht);
+			LOG_INFO("ss:%s Logout", toUser);
+			pcht=NULL;
+			break;
+		}	
+	}	
+	if(pos==&head)
+	{
+		LOG_INFO("ss:%s NotLogin", toUser);
+		strcpy(res,"NotLogin");
+	}
+	sprintf(sendbuf,LOGOUT_RES,res);
+	if(send(pclt->fd,sendbuf,strlen(sendbuf),0))
+	{
+		LOG_ERR("%s:%d send",__func__,__LINE__);
+	}
+	return 0;
+}
+
+
+
 int user_ReqList(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 {
+	printf("heheheh\n");
 	struct list_head *pos, *tmpos;
 	LOG_INFO("FromUser:%s replist", fromUser);
 	list_for_each_safe(pos, tmpos, &head)    //查询设备是否已经连接
@@ -300,6 +339,19 @@ chat_handle_t chat_handle_table[] = {
 	{"ReqList", user_ReqList},
 	{"Alive", user_Alive},
 };
+
+typedef struct
+    {
+	     const char*cmd;
+	     int (*handler)(pClient,xmlDocPtr,xmlNodePtr,xmlChar*);
+    }ss_handle_t;
+
+ss_handle_t ss_handle_table[2]={
+	{"Reqlist",user_ReqList},
+//	{"CHGLOG",ss_CHGLOG},
+	{"QUITUSER",ss_QUITUSER},
+};
+
 
 /*socket 接收数据事件， 返回-1关闭服务器*/
 int recv_handler(pClient pclt, char *recvbuf,int recvlen)
@@ -355,6 +407,35 @@ int recv_handler(pClient pclt, char *recvbuf,int recvlen)
 			}
 		}
 		xmlFree(fromUser);
+		xmlFree(cmd);
+	}
+
+	else if(xmlStrcmp(cur->name,(const xmlChar*)"Fromss")==0)//接收来自ss控制信息
+	{
+		xmlChar*fromss=NULL;
+		xmlChar*cmd=NULL;
+		fromss=xmlGetNodeText(doc,cur,"Fromss");
+		if(fromss==NULL)
+			return 0;
+		cur=cur->next;
+		cmd=xmlGetNodeText(doc,cur,"CMD");
+		if(cmd==NULL)
+		{
+			xmlFree(fromss);
+			goto recv_handler_release;
+		}
+
+		LOG_INFO("Fromss:%s CMD:%s",fromss,cmd);
+		int i;
+		for(i=0;i<COUNTOF(ss_handle_table);i++)
+		{
+			if(strcmp((char*)cmd,ss_handle_table[i].cmd)==0)
+			{
+				ss_handle_table[i].handler(pclt,doc,cur,fromss);
+				break;
+			}
+		}
+		xmlFree(fromss);
 		xmlFree(cmd);
 	}
 recv_handler_release:

@@ -20,7 +20,7 @@ OBJSS = $(SRCSS:.c=.o)
 # $@ 代表目标文件
 # $^ 代表所有依赖文件
 # %< 代表第一个依赖文件
-all:$(TARGETS) $(TARGETC) #$(TARGETSS)
+all:$(TARGETS) $(TARGETC) $(TARGETSS)
 
 $(TARGETS):$(OBJS)  #编译服务器
 	$(CC) -o $@ $^ -L /usr/lib/i386-linux-gun -lxml2 -lmysqlclient
@@ -34,7 +34,7 @@ $(TARGETSS):$(OBJSS) #编译ss
 clean:  
 	rm -rf $(TARGETS) $(OBJS)
 	rm -rf $(TARGETC) $(OBJC)
-#	rm -rf $(TARGETSS) $(OBJSS)
+	rm -rf $(TARGETSS) $(OBJSS)
 
 %.o:%.c  
 	$(CC) $(CFLAGS) $(CDEFINE) -o $@ -c $<
