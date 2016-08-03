@@ -324,6 +324,7 @@ int ss_QUITUSER(pClient pclt,xmlDocPtr doc,xmlNodePtr cur,xmlChar*fromss)
 	{
 		LOG_ERR("%s:%d send",__func__,__LINE__);
 	}
+	xmlFree(toUser);
 	return 0;
 }
 
@@ -360,6 +361,139 @@ int user_Alive(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 	return 0;
 }
 
+int user_FileSend(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
+{
+	char res[16] = "success";
+	cur = cur->next;
+	xmlChar *toUser = xmlGetNodeText(doc, cur, "ToUser");
+	if(toUser == NULL)
+		return 0;
+	struct list_head *pos;
+	list_for_each(pos, &head)    //查询设备是否已经连接
+	{
+		pcht = list_entry(pos, Chater, entry);
+		if(strcmp(pcht->userName, (const char*)fromUser) == 0)
+		{
+			sprintf(sendbuf, FILE_SEND_TO, fromUser);
+			if(send(pclt->fd, sendbuf, strlen(sendbuf), 0) < 0)
+			{
+				LOG_ERR("%s:%d send",__func__,__LINE__);
+				strcpy(res, "sendError");
+			}
+			break;
+		}
+	}
+	if(pos == &head)
+	{
+		strcpy(res, "friendLogout");
+	}
+	if(strcmp(res, "success")) //操作失败返回错误信息
+	{
+		sprintf(sendbuf, FILE_SEND_ERR, res);
+		if(send(pclt->fd, sendbuf, strlen("success"), 0) < 0)
+		{
+			LOG_ERR("%s:%d send",__func__,__LINE__);
+		}
+	}
+	xmlFree(toUser);
+	return 0;
+}
+
+int user_FileRecv(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
+{
+	xmlChar *toUser = NULL;
+	xmlChar *ip = NULL;
+	xmlChar *port = NULL;
+	toUser = xmlGetNodeText(doc, cur, "ToUser");
+	if(toUser == NULL)
+		return 0;
+	cur = cur->next;
+	if(xmlStrcmp(cur->name,(const xmlChar*)"ADDR") !=0 )
+	{
+		cur = cur->xmlChildrenNode;
+		ip = xmlGetNodeText(doc, cur, "IP");
+		if(ip == NULL) goto user_FileRecv_free;
+
+		port = xmlGetNodeText(doc, cur, "PORT");
+		if(port == NULL) goto user_FileRecv_free;
+	}
+	struct list_head *pos;
+	list_for_each(pos, &head) 
+	{
+		pcht = list_entry(pos, Chater, entry);
+		if(strcmp(pcht->userName, (const char*)fromUser) == 0)
+		{
+			sprintf(sendbuf, FILE_RECV_FROM, fromUser, ip, port);
+			if(send(pclt->fd, sendbuf, strlen(sendbuf), 0) < 0)
+			{
+				LOG_ERR("%s:%d send",__func__,__LINE__);
+			}
+			break;
+		}
+	}
+user_FileRecv_free:
+	xmlFree(toUser);
+	xmlFree(ip);
+	xmlFree(port);
+	return 0;
+}
+
+int user_FileSendErro(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
+{
+	xmlChar *toUser = xmlGetNodeText(doc, cur, "ToUser");
+	if(toUser == NULL)
+		return 0;
+	xmlChar *error = xmlGetNodeText(doc, cur, "ERROR");
+	if(error == NULL) 
+	{
+		xmlFree(toUser);
+		return 0;
+	}
+	struct list_head *pos;
+	list_for_each(pos, &head) 
+	{
+		pcht = list_entry(pos, Chater, entry);
+		if(strcmp(pcht->userName, (const char*)fromUser) == 0)
+		{
+			sprintf(sendbuf, FILE_SEND_ERR, error);
+			if(send(pclt->fd, sendbuf, strlen(sendbuf), 0) < 0)
+			{
+				LOG_ERR("%s:%d send",__func__,__LINE__);
+			}
+			break;
+		}
+	}
+	return 0;
+}
+
+int user_FileRecvErro(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
+{
+	xmlChar *toUser = xmlGetNodeText(doc, cur, "ToUser");
+	if(toUser == NULL)
+		return 0;
+	xmlChar *error = xmlGetNodeText(doc, cur, "ERROR");
+	if(error == NULL) 
+	{
+		xmlFree(toUser);
+		return 0;
+	}
+	struct list_head *pos;
+	list_for_each(pos, &head) 
+	{
+		pcht = list_entry(pos, Chater, entry);
+		if(strcmp(pcht->userName, (const char*)fromUser) == 0)
+		{
+			sprintf(sendbuf, FILE_RECV_ERR, error);
+			if(send(pclt->fd, sendbuf, strlen(sendbuf), 0) < 0)
+			{
+				LOG_ERR("%s:%d send",__func__,__LINE__);
+			}
+			break;
+		}
+	}
+	return 0;
+}
+
 typedef struct
 {
 	const char *cmd;
@@ -372,6 +506,10 @@ chat_handle_t chat_handle_table[] = {
 	{"Logout", user_logout},
 	{"ReqList", user_ReqList},
 	{"Alive", user_Alive},
+	{"FileSend", user_FileSend},
+	{"FileRecv", user_FileRecv},
+	{"FileSend", user_FileSendErro},
+	{"FileRecv", user_FileRecvErro},
 };
 
 typedef struct

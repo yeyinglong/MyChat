@@ -121,14 +121,18 @@ const char FILE_RECV[]={               //接收端发给服务器的包
 
 const char C_FILE_SEND_ERR[]={    //发送端出现异常时，发送给服务器的包
 	"<xml>"
+	"<FromUser>%s</FromUser>"
 	"<CMD>FileSend</CMD>"
+	"<ToUser>%s</ToUser>"
 	"<ERROR>%s</ERROR>"
 	"</xml>"
 };
 
 const char C_FILE_RECV_ERR[]={      //接收端出现异常时，发送给服务器的包
 	"<xml>"
+	"<FromUser>%s</FromUser>"
 	"<CMD>FileRecv</CMD>"
+	"<ToUser>%s</ToUser>"
 	"<ERROR>%s</ERROR>"
 	"</xml>"
 };
