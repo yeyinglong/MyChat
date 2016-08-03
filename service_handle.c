@@ -54,6 +54,42 @@ const char ALIVE_RES[]={
 	"</xml>"
 };
 
+
+#if 1
+const char FILE_SEND_TO[]={    //服务器接到发送端请求后，发给接收端的包
+	"<xml>"
+	"<CMD>FileSend</CMD>"
+	"<FromUser>%s</FromUser>"
+	"</xml>"
+};
+
+const char FILE_RECV_FROM[]={   //服务器接到接收端准备就绪的信息后，发给发送端的包
+	"<xml>"
+	"<CMD>FileRecv</CMD>"
+	"<FromUser>%s</FromUser>"
+	"<ADDR>"
+		"<IP>%s</IP>"
+		"<PORT>%s</PORT>"
+	"</ADDR>"
+	"</xml>"
+};
+
+const char FILE_SEND_ERR[]={    //接收端出现异常时，服务器反馈给发送端的包
+	"<xml>"
+	"<CMD>FileSend</CMD>"
+	"<ERROR>%s</ERROR>"
+	"</xml>"
+};
+
+const char FILE_RECV_ERR[]={      //发送端出现异常时，服务器反馈给接收端的包
+	"<xml>"
+	"<CMD>FileRecv</CMD>"
+	"<ERROR>%s</ERROR>"
+	"</xml>"
+};
+
+#endif
+
 #define COUNTOF(x) (sizeof(x)/sizeof((x)[0]))
 #define SEND_BUF_SIZE 1024
 #define RECV_BUF_SIZE 1024
@@ -292,10 +328,8 @@ int ss_QUITUSER(pClient pclt,xmlDocPtr doc,xmlNodePtr cur,xmlChar*fromss)
 }
 
 
-
 int user_ReqList(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 {
-	printf("heheheh\n");
 	struct list_head *pos, *tmpos;
 	LOG_INFO("FromUser:%s replist", fromUser);
 	list_for_each_safe(pos, tmpos, &head)    //查询设备是否已经连接
@@ -341,10 +375,10 @@ chat_handle_t chat_handle_table[] = {
 };
 
 typedef struct
-    {
-	     const char*cmd;
-	     int (*handler)(pClient,xmlDocPtr,xmlNodePtr,xmlChar*);
-    }ss_handle_t;
+{
+	const char*cmd;
+	int (*handler)(pClient,xmlDocPtr,xmlNodePtr,xmlChar*);
+}ss_handle_t;
 
 ss_handle_t ss_handle_table[2]={
 	{"Reqlist",user_ReqList},

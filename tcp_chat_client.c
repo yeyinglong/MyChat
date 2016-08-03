@@ -29,8 +29,21 @@ char stdinbuf[128];
 char sqlcmd[BUFFER_SIZE];
 MYSQL *conn;       //数据库
 char username[32];
+
+struct file_transmit{
+	int status;
+	char sendname[32];
+	char recvname[32];
+	char filename[32];
+}FileTransmit,*pFileTransmit;
+//定义文件传输状态，正在传输时或正在准备时无法再进行文件传输
+#define TRA_ST_RUN 1  //传输状态
+#define TRA_ST_REST 0  //文件传输的休息状态
+#define TRA_ST_PREP 2  //准备状态，即发送文件传输的信息直到双方建立连接的状态
+
 static int user_status;
 static int sockfd;
+	
 #define U_ST_LOGIN 1  //已登录
 #define U_ST_LOGOUT 0  //未登录
 #define U_ST_LOGING 2   //正在登陆
@@ -45,7 +58,7 @@ static int sockfd;
 *************%s:在CHAT状态下输入聊天的内容，将内容和聊天对象发送给服务器
 *************regist : 在LOGOUT状态下注册账号
 *************quit : 在LOGOUT状态退出程序
-
+*************send file : 在LOGIN或者CHAT状态下，进行发送文件的操作
 *************/
 
 
@@ -86,6 +99,41 @@ const char ALIVE_MSG[]={
 	"</xml>"
 };
 
+const char FILE_SEND[]={              //发送端发给服务器的包
+	"<xml>"
+	"<FromUser>%s</FromUser>"
+	"<CMD>FileSend</CMD>"
+	"<ToUser>%s</ToUser>"
+	"</xml>"
+};
+
+const char FILE_RECV[]={               //接收端发给服务器的包
+	"<xml>"
+	"<FromUser>%s</FromUser>"
+	"<CMD>FileRecv</CMD>"
+	"<ToUser>%s</ToUser>"
+	"<ADDR>"
+		"<IP>%s</IP>"
+		"<PORT>%s</PORT>"
+	"</ADDR>"
+	"</xml>"
+};
+
+const char C_FILE_SEND_ERR[]={    //发送端出现异常时，发送给服务器的包
+	"<xml>"
+	"<CMD>FileSend</CMD>"
+	"<ERROR>%s</ERROR>"
+	"</xml>"
+};
+
+const char C_FILE_RECV_ERR[]={      //接收端出现异常时，发送给服务器的包
+	"<xml>"
+	"<CMD>FileRecv</CMD>"
+	"<ERROR>%s</ERROR>"
+	"</xml>"
+};
+
+
 int startup_handler(void);
 int mysql_query_my(MYSQL *conn, const char *str);
 int recv_message(xmlDocPtr, xmlNodePtr);
@@ -93,9 +141,11 @@ int login_res(xmlDocPtr doc, xmlNodePtr cur);
 int send_res(xmlDocPtr doc, xmlNodePtr cur);
 int logout_res(xmlDocPtr doc, xmlNodePtr cur);
 int list_res(xmlDocPtr doc, xmlNodePtr cur);
-int cleanup(void);
+int file_send_to(xmlDocPtr doc, xmlNodePtr cur);
+int file_recv_from(xmlDocPtr doc, xmlNodePtr cur);
 
-
+void *client_file_recv(void *);
+void *client_file_send(void *);
 void *client_alive(void *);   //线程函数，用于定时向服务器发送信息
 int load_user();     //用于登陆账号
 int regist_user();   //注册账号
@@ -113,24 +163,29 @@ typedef struct{
 	pfun func;
 }xml_handler_t;
 
-xml_handler_t xml_handler_table[5] = {
+xml_handler_t xml_handler_table[7] = {
 	{"msg",recv_message},
 	{"res",send_res},
 	{"Login",login_res},
 	{"Logout",logout_res},
-	{"ReqList",list_res}
+	{"ReqList",list_res},
+	{"FileSend",file_send_to},
+	{"FileRecv",file_recv_from}
 };
 
 int main(void)
 {
+	pFileTransmit = (struct file_transmit *)malloc(sizeof(struct file_transmit));
     struct pollfd fds[2];
 	struct hostent *host;
 	struct sockaddr_in serv_addr;
 	char friendname[32] = {0};
+//	char filename[32] = {0};
 	
 	user_status = U_ST_LOGOUT;
-	
-    startup_handler();
+	pFileTransmit->status = TRA_ST_REST;
+    
+	startup_handler();
 	
 	if((host = gethostbyname("localhost"))==NULL)
 	{
@@ -215,6 +270,22 @@ when_getmessage:
 					user_status = U_ST_CHAT;
 				}
 			}
+			else if(strncmp(stdinbuf,"send file",strlen("send file")) == 0)
+			{
+
+				printf("friend name:");
+				fgets(pFileTransmit->recvname,sizeof(pFileTransmit->recvname),stdin);
+				pFileTransmit->recvname[strlen(pFileTransmit->recvname)-1] = '\0';
+				
+				pFileTransmit->status = TRA_ST_PREP;
+
+				strcpy(pFileTransmit->sendname,username);
+				// printf("file name:");
+				// fgets(filename,sizeof(filename),stdin);
+				// filename[strlen(filename)-1] = '\0';
+				sprintf(sendbuf,FILE_SEND,pFileTransmit->sendname,pFileTransmit->recvname);
+				send(sockfd,sendbuf,strlen(sendbuf),0);
+			}
 			else
 			{
 				if(user_status == U_ST_CHAT)
@@ -234,7 +305,11 @@ when_getmessage:
             xmlNodePtr cur;  //定义结点指针(你需要它为了在各个结点间移动)
             int recvlen = recv(sockfd, recvbuf, BUFFER_SIZE-1, 0);
             if(recvlen <= 0)
-                break;
+			{
+				printf("connect is broken!\n");
+				user_status = U_ST_LOGOUT;
+				break;
+			}
             recvbuf[recvlen] = 0;
             doc = xmlParseMemory((const char *)recvbuf, strlen((char *)recvbuf)+1);  
             if (doc == NULL )
@@ -548,4 +623,92 @@ int list_res(xmlDocPtr doc, xmlNodePtr cur)
 	send(sockfd,"OK",strlen("OK"),0);
 	free(user_list);
 	return 1;
+}
+
+int file_send_to(xmlDocPtr doc, xmlNodePtr cur)
+{
+	xmlChar *userfrom;
+	xmlChar *error;
+	if((cur = cur->next) == NULL)
+		return -1;
+	if(xmlStrcmp(cur->name,(const xmlChar *)"FromUser"))
+	{
+		if(xmlStrcmp(cur->name,(const xmlChar *)"ERROR"))
+			return -1;
+		error = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+		printf("receive error : %s\n",error);
+		bzero(pFileTransmit,sizeof(struct file_transmit));
+		pFileTransmit->status = TRA_ST_REST;
+		free(error);
+		return 1;
+	}
+	userfrom = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+	if(userfrom == NULL)
+		return -1;
+	if(pFileTransmit->status != TRA_ST_REST)
+	{
+		sprintf(sendbuf,C_FILE_RECV_ERR,"cannot receive");
+		send(sockfd,sendbuf,sizeof(sendbuf),0);
+		return 0;
+	}
+	
+	printf("do your want to accept file from %s,press N|n to refuse or other to accept\n",userfrom);
+	char c = getchar();
+	if(c == 'N' || c == 'n')
+	{
+		sprintf(sendbuf,C_FILE_RECV_ERR,"refuse");
+		send(sockfd,sendbuf,sizeof(sendbuf),0);
+		free(userfrom);
+		return 0;
+	}
+	
+	pFileTransmit->status = TRA_ST_PREP;
+	strcpy(pFileTransmit->sendname,(char *)userfrom);
+	strcpy(pFileTransmit->recvname,username);
+	
+	pthread_t tid_FileTra;
+	pthread_create(&tid_FileTra,NULL,client_file_recv,NULL);
+	pthread_detach(tid_FileTra);
+	free(userfrom);
+	return 0;
+}
+int file_recv_from(xmlDocPtr doc, xmlNodePtr cur)
+{
+	xmlChar *userto;
+	xmlChar *error;
+	if((cur = cur->next) == NULL)
+		return -1;
+	if(xmlStrcmp(cur->name,(const xmlChar *)"FromUser"))
+	{
+		if(xmlStrcmp(cur->name,(const xmlChar *)"ERROR"))
+			return -1;
+		error = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+		printf("send error : %s\n",error);
+		bzero(pFileTransmit,sizeof(struct file_transmit));
+		pFileTransmit->status = TRA_ST_REST;
+		free(error);
+		return 1;
+	}
+	userto = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+	if(strcmp((char *)userto,pFileTransmit->recvname)!=0)
+	{
+		sprintf(sendbuf,C_FILE_SEND_ERR,"mismatching");
+		send(sockfd,sendbuf,strlen(sendbuf),0);
+		return -1;
+	}	
+	pthread_t tid_FileTra;
+	pthread_create(&tid_FileTra,NULL,client_file_send,NULL);
+	pthread_detach(tid_FileTra);
+	free(userto);
+	return 0;
+}
+
+void *client_file_recv(void *arg)
+{
+	pthread_exit((void *)0);
+}
+
+void *client_file_send(void *arg)
+{
+	pthread_exit((void *)0);
 }

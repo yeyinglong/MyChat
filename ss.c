@@ -7,6 +7,7 @@
 #include<stdio.h>
 #include<stdlib.h>
 #include<string.h>
+#include<errno.h>
 #include<sys/socket.h>
 #include<netinet/in.h>
 #include<netdb.h>
@@ -81,7 +82,6 @@ int main()
 		exit(1);
 	}
 		
-	int sockfd;
 	sockfd=socket(AF_INET,SOCK_STREAM,0);
 	struct sockaddr_in ss_addr;
 
@@ -196,9 +196,8 @@ int main()
 
 int logout_res(xmlDocPtr doc,xmlNodePtr cur)
 {
-
-   xmlChar*error;
-  if((cur = cur->next) == NULL)
+   	xmlChar*error;
+  	if((cur = cur->next) == NULL)
 		return -1;
 	if(xmlStrcmp(cur->name,(const xmlChar *)"ERROR"))
 		return -1;
@@ -221,7 +220,8 @@ int list_res(xmlDocPtr doc, xmlNodePtr cur)
 	if(user_list == NULL)
 		return 0;
 	printf("%s\n",user_list);
-	send(sockfd,"OK",strlen("OK"),0);
+	if(send(sockfd,"OK",strlen("OK"),0)<0)
+		LOG_ERR("send");
 	free(user_list);
 	return 1;
 }
