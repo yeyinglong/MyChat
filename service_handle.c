@@ -220,9 +220,10 @@ int transmit_msg(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 	{
 		strcpy(res, "friendLogout");
 	}
+	LOG_DBG("message status %s", res);
 	sprintf(sendbuf, SEND_RES, res);
 	if(send(pclt->fd, sendbuf, strlen(sendbuf), 0) < 0)
-		LOG_ERR()
+		LOG_ERR("%s:%d send",__func__,__LINE__);
 	xmlFree(toUser); 
 	xmlFree(context); 
 	return 0;
@@ -316,7 +317,7 @@ int ss_QUITUSER(pClient pclt,xmlDocPtr doc,xmlNodePtr cur,xmlChar*fromss)
 	}	
 	if(pos==&head)
 	{
-		LOG_INFO("ss:%s NotLogin", toUser);
+		LOG_DBG("ss:%s NotLogin", toUser);
 		strcpy(res,"NotLogin");
 	}
 	sprintf(sendbuf,LOGOUT_RES,res);
@@ -389,6 +390,7 @@ int user_FileSend(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser
 	}
 	if(strcmp(res, "success")) //操作失败返回错误信息
 	{
+		LOG_DBG("File send estbilsh error %s", res);
 		sprintf(sendbuf, FILE_SEND_ERR, res);
 		if(send(pclt->fd, sendbuf, strlen("success"), 0) < 0)
 		{
@@ -417,6 +419,7 @@ int user_FileRecv(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser
 		port = xmlGetNodeText(doc, cur, "PORT");
 		if(port == NULL) goto user_FileRecv_free;
 	}
+	LOG_INFO("File recv addr ip:%s port:%s", ip, port);
 	struct list_head *pos;
 	list_for_each(pos, &head) 
 	{
@@ -449,6 +452,7 @@ int user_FileSendErro(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *from
 		xmlFree(toUser);
 		return 0;
 	}
+	LOG_INFO("File Send: %s >> %s Error %s", toUser, fromUser, error);
 	struct list_head *pos;
 	list_for_each(pos, &head) 
 	{
@@ -477,6 +481,7 @@ int user_FileRecvErro(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *from
 		xmlFree(toUser);
 		return 0;
 	}
+	LOG_INFO("File Send: %s >> %s Error %s", fromUser, toUser, error);
 	struct list_head *pos;
 	list_for_each(pos, &head) 
 	{
