@@ -8,6 +8,9 @@
 #include <libxml/xmlmemory.h>
 #include <libxml/tree.h>
 
+
+#include <mysql/mysql.h>
+
 #include "log.h"
 #include "service.h"
 
@@ -15,6 +18,15 @@ int LOG_FLAG = 4;
 const char SEND_TEXT[]={
 	"<xml>"
 	"<CMD>msg</CMD>"
+	"<FromUser>%s</FromUser>"
+	"<Context><![CDATA[%s]]></Context>"
+	"</xml>"
+};
+
+const char GROUP_TEXT[]={
+	"<xml>"
+	"<CMD>groupmsg</CMD>"
+	"<Group>%s</Group>"
 	"<FromUser>%s</FromUser>"
 	"<Context><![CDATA[%s]]></Context>"
 	"</xml>"
@@ -108,6 +120,8 @@ const char SS_RES[]={
 #define RECV_BUF_SIZE 1024
 static char sendbuf[SEND_BUF_SIZE];
 static char recvbuf[SEND_BUF_SIZE];
+char sqlcmd[SEND_BUF_SIZE];
+MYSQL *conn;       //数据库
 
 typedef struct {
 	struct list_head entry;
@@ -121,6 +135,14 @@ static LIST_HEAD(head);        //定义链表头
 /*服务器启动时调用函数*/
 int startup_handler(void)
 {
+	conn = mysql_init(NULL);
+	char value = 1;
+	mysql_options(conn, MYSQL_OPT_RECONNECT, (char *)&value);
+    //连接数据库
+    if (!mysql_real_connect(conn, "yeyl.site", "root", "201qyzx201", "MyChat", 0, NULL, 0)) 
+    {
+		LOG_ERR_MYSQL(conn);
+    }
 	return 0;
 }
 
@@ -169,6 +191,18 @@ int close_service(pClient pclt, xmlDocPtr doc, xmlNodePtr cur)
 		return -1;
 	}
 }
+
+int mysql_query_my(MYSQL *conn, const char *str)
+{
+	mysql_ping(conn);
+	int ret = mysql_query(conn, str);
+	if(ret)
+	{
+		LOG_ERR_MYSQL(conn);
+	}
+	return ret;
+}
+
 
 //从当前节点获取内容，获取成功返回内容指针
 xmlChar* xmlGetNodeText(xmlDocPtr doc, xmlNodePtr cur, const char *name)
@@ -522,6 +556,52 @@ int user_FileRecvErro(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *from
 	return 0;
 }
 
+int user_groupmsg(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
+{
+	cur = cur->next;
+	xmlChar *group = xmlGetNodeText(doc, cur, "GROUP");
+	if(group == NULL)
+		return 0;
+	cur = cur->next;
+	xmlChar *context = xmlGetNodeText(doc, cur, "Context");
+	if(context == NULL)
+	{
+		xmlFree(group);
+		return 0;
+	}
+	sprintf(sqlcmd, "select * from %s", group);
+	mysql_query_my(conn, sqlcmd);
+    MYSQL_RES *res = mysql_store_result(conn);
+	if(res == NULL) goto user_groupmsg_free;
+	MYSQL_ROW row;
+	while((row = mysql_fetch_row(res)) != NULL)
+	{
+		struct list_head *pos;
+		if(strcmp(row[0], (char*)fromUser) == 0)
+			continue;
+		list_for_each(pos, &head) 
+		{
+			pcht = list_entry(pos, Chater, entry);
+			if(strcmp(pcht->userName, row[0]) == 0)
+			{
+				sprintf(sendbuf, GROUP_TEXT, group, fromUser, context);
+				if(send(pcht->pclt->fd, sendbuf, strlen(sendbuf), 0) < 0)
+				{
+					LOG_ERR("%s:%d send",__func__,__LINE__);
+				}
+				else
+				{
+					LOG_INFO("%s/%s:%s",group, fromUser, context);
+				}
+			}
+		}
+	}
+user_groupmsg_free:
+	xmlFree(group);
+	xmlFree(context);
+	return 0;
+}
+
 
 int ss_err(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 {
@@ -643,6 +723,7 @@ chat_handle_t chat_handle_table[] = {
 	{"FileRecv", user_FileRecv},
 	{"FileSendError", user_FileSendErro},
 	{"FileRecvError", user_FileRecvErro},
+	{"groupmsg", user_groupmsg},
 };
 chat_handle_t ss_handle_table[] = {
 	{"Login", user_login},

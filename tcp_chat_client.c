@@ -53,6 +53,8 @@ static int sockfd;
 #define U_ST_LOGOUT 0  //未登录
 #define U_ST_LOGING 2   //正在登陆
 #define U_ST_CHAT 3   //正在聊天   
+#define U_ST_GCHAT 4   //正在group聊天   
+
 
 #define FILE_MAXLEN 1024
 struct waving_file{               //用于文件传输的结构体
@@ -105,7 +107,35 @@ const char REQLIST[]={
     "<CMD>ReqList</CMD>"
     "</xml>"
 };
+const char GROUPLIST[]={ //1发送 grouplist ， 查找服务器上的group 遍历group内的成员 对比fromuser如果有就返回group名字；
+    "<xml>"
+    "<FromUser>%s</FromUser>"
+    "<CMD>GROUPLIST</CMD>"
+    "</xml>"
+};
+const char GLOGIN_MSG[]={  //1加入Group 
+    "<xml>"
+    "<FromUser>%s</FromUser>"
+    "<CMD>GLogin</CMD>"
+	"<GROUP>%s</GROUP>"
+    "</xml>"
+};
 
+const char GLOGOUT_MSG[]={ //1离开group
+    "<xml>"
+    "<FromUser>%s</FromUser>"
+    "<CMD>GLogout</CMD>"
+	"<GROUP>%s</GROUP>"
+    "</xml>"
+};
+const char GROUP_MSG[]={    //group发生信息-
+	"<xml>"
+	"<FromUser>%s</FromUser>"
+    "<CMD>groupmsg</CMD>"
+    "<GROUP>%s</GROUP>"
+	"<Context><![CDATA[%s]]></Context>"
+	"</xml>"
+};
 const char ALIVE_MSG[]={
 	"<xml>"
 	"<FromUser>%s</FromUser>"
@@ -159,6 +189,7 @@ int login_res(xmlDocPtr doc, xmlNodePtr cur);
 int send_res(xmlDocPtr doc, xmlNodePtr cur);
 int logout_res(xmlDocPtr doc, xmlNodePtr cur);
 int list_res(xmlDocPtr doc, xmlNodePtr cur);
+int recv_groupmsg(xmlDocPtr doc, xmlNodePtr cur);
 int file_send_to(xmlDocPtr doc, xmlNodePtr cur);
 int file_recv_from(xmlDocPtr doc, xmlNodePtr cur);
 int face(char *str,char*oldstr,char*newstr,char*buf);//表情函数；
@@ -176,14 +207,15 @@ typedef struct{
 	pfun func;
 }xml_handler_t;
 
-xml_handler_t xml_handler_table[7] = {
+xml_handler_t xml_handler_table[8] = {
 	{"msg",recv_message},
 	{"res",send_res},
 	{"Login",login_res},
 	{"Logout",logout_res},
 	{"ReqList",list_res},
 	{"FileSend",file_send_to},
-	{"FileRecv",file_recv_from}
+	{"FileRecv",file_recv_from},
+	{"groupmsg", recv_groupmsg}
 };
 
 int main(void)
@@ -239,7 +271,7 @@ int main(void)
     {
 		bzero(sendbuf,sizeof(sendbuf));
         poll(fds, 2, 4000);
-        if(fds[0].revents & POLLIN)
+        if(fds[0].revents & POLLIN) //数据可读
         {
 			if(user_status != U_ST_LOGOUT && user_status != U_ST_LOGING)
 				{
@@ -255,6 +287,67 @@ int main(void)
 				{
 					sprintf(sendbuf,REQLIST,username);
 					send(sockfd,sendbuf,strlen(sendbuf),0);
+				}
+				else if(strncmp(stdinbuf,"show group",strlen("show group")) == 0)// 发送show group 命令；
+				{
+					sprintf(sendbuf,GROUPLIST,username);
+					send(sockfd,sendbuf,strlen(sendbuf),0);
+				}
+				else if(strncmp(stdinbuf,"join",strlen("join")) == 0) //join group
+				{
+					strtok(stdinbuf," ");
+					char *str;
+					if((str = strtok(NULL," ")) == NULL)
+					{
+						printf("please input the group name you want to join!\n");
+					}
+					else
+					{
+						strcpy(friendname,str);
+						sprintf(sendbuf,GLOGIN_MSG,username,friendname);
+						send(sockfd,sendbuf,strlen(sendbuf), 0);
+					}
+				}
+				else if(strncmp(stdinbuf,"leave",strlen("leave")) == 0) //join group
+				{
+					strtok(stdinbuf," ");
+					char *str;
+					if((str = strtok(NULL," ")) == NULL)
+					{
+						printf("please input the group name you want to leave!\n");
+					}
+					else
+					{
+						strcpy(friendname,str);
+						sprintf(sendbuf,GLOGOUT_MSG,username,friendname);
+						send(sockfd,sendbuf,strlen(sendbuf),0);
+					}
+				}
+				else if(strncmp(stdinbuf,"chatgroup",strlen("chatgroup")) == 0) //chatgroup name
+				{
+					strtok(stdinbuf," ");
+					char *str;
+					if((str = strtok(NULL," ")) == NULL)
+					{
+						printf("please input the name you want to chat with!\n");
+					}
+					else
+					{
+						sprintf(sqlcmd,"select user from %s where user='%s'", str, username);
+						mysql_query_my(conn, sqlcmd);
+						MYSQL_RES *res = mysql_store_result(conn);
+						if(res != NULL) 
+						{
+							MYSQL_ROW row = mysql_fetch_row(res);
+							if(row != NULL)
+							{
+								strcpy(friendname,str);
+								user_status = U_ST_GCHAT;
+							}
+						}
+						if(user_status != U_ST_GCHAT)
+							printf("group not exist\n");
+					}
 				}
 				else if(strncmp(stdinbuf,"chat",strlen("chat")) == 0) //chat name
 				{
@@ -286,14 +379,19 @@ int main(void)
 					sprintf(sendbuf,FILE_SEND,pFileTransmit->sendname,pFileTransmit->recvname);
 					send(sockfd,sendbuf,strlen(sendbuf),0);
 				}
-				else if(user_status == U_ST_CHAT)
+				else if(user_status == U_ST_CHAT)//chat发送-
 				{
 					sprintf(sendbuf,SEND_MSG,username,friendname,stdinbuf);
 					send(sockfd,sendbuf,strlen(sendbuf),0);
 				}
+				else if(user_status == U_ST_GCHAT)//chatgroup发送-
+				{
+					sprintf(sendbuf,GROUP_MSG,username,friendname,stdinbuf);
+					send(sockfd,sendbuf,strlen(sendbuf),0);
+				}
 				else
 				{
-					printf("input chat somebody to chat, input show list to show friend who online\n");
+					printf("input chat somebody to chat ，chat somegroup to chat, input show list to show friend who online\n");
 				}
 			}
 			else
@@ -637,6 +735,42 @@ int list_res(xmlDocPtr doc, xmlNodePtr cur)
 	printf("%s\n",user_list);
 	send(sockfd,"OK",strlen("OK"),0);
 	free(user_list);
+	return 1;
+}
+
+int recv_groupmsg(xmlDocPtr doc, xmlNodePtr cur)
+{
+	xmlChar *group = NULL;
+	if((cur = cur->next) == NULL)
+		return -1;
+	if(xmlStrcmp(cur->name,(const xmlChar *)"Group"))
+		return -1;
+	group = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+	if(group == NULL)
+		return 0;
+
+	xmlChar *fromUser = NULL;
+	if((cur = cur->next) == NULL)
+		return -1;
+	if(xmlStrcmp(cur->name,(const xmlChar *)"FromUser"))
+		return -1;
+	fromUser = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+	if(fromUser == NULL)
+		return 0;
+	
+	xmlChar *context = NULL;
+	if((cur = cur->next) == NULL)
+		return -1;
+	if(xmlStrcmp(cur->name,(const xmlChar *)"Context"))
+		return -1;
+	context = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+	if(context == NULL)
+		return 0;
+
+	printf("%s/%s:%s\n",group,fromUser,context);
+	free(fromUser);
+	free(context);
+	free(group);
 	return 1;
 }
 
