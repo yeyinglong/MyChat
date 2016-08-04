@@ -371,12 +371,12 @@ int user_ReqList(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 
 int user_Alive(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 {
-	LOG_INFO("%s Alive", fromUser);
-	sprintf(sendbuf, ALIVE_RES, "success");
-	if(send(pclt->fd, sendbuf, strlen(sendbuf), 0) < 0)
-	{
-		LOG_ERR("%s:%d send",__func__,__LINE__);
-	}
+	// LOG_INFO("%s Alive", fromUser);
+	// sprintf(sendbuf, ALIVE_RES, "success");
+	// if(send(pclt->fd, sendbuf, strlen(sendbuf), 0) < 0)
+	// {
+	// 	LOG_ERR("%s:%d send",__func__,__LINE__); 
+	// }
 	return 0;
 }
 

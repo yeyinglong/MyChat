@@ -333,7 +333,7 @@ int main(void)
 			{
 				printf("connect is broken!\n");
 				user_status = U_ST_LOGOUT;
-				continue;
+				exit(0);
 			}
             recvbuf[recvlen] = 0;
             doc = xmlParseMemory((const char *)recvbuf, strlen((char *)recvbuf)+1);  
@@ -404,7 +404,7 @@ int load_user()
 			MYSQL_ROW row = mysql_fetch_row(res);
 			if(row!= NULL)
 			{
-				if(strncmp((char *)row[0],passwd,strlen(row[0])) != 0) 
+				if(strcmp((char *)row[0],passwd) != 0) 
 				{
 					printf("passwd error!please input agian\n");
 					continue;
@@ -520,7 +520,7 @@ void *client_alive(void *arg)
 	char alive_buf[BUFFER_SIZE] = {0};
 	while(1)
 	{
-		sleep(10);
+		sleep(100);
 		if(user_status == U_ST_LOGIN || user_status == U_ST_CHAT)
 		{
 			sprintf(alive_buf,ALIVE_MSG,username);
@@ -642,6 +642,8 @@ int list_res(xmlDocPtr doc, xmlNodePtr cur)
 
 int file_send_to(xmlDocPtr doc, xmlNodePtr cur)
 {
+	printf("recv filesend\n");
+	bzero(sendbuf,sizeof(sendbuf));
 	xmlChar *userfrom;
 	xmlChar *error;
 	if((cur = cur->next) == NULL)
@@ -689,6 +691,7 @@ int file_send_to(xmlDocPtr doc, xmlNodePtr cur)
 }
 int file_recv_from(xmlDocPtr doc, xmlNodePtr cur)
 {
+	bzero(sendbuf,sizeof(sendbuf));
 	struct sockaddr_in *file_recv_addr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
 	bzero(file_recv_addr,sizeof(struct sockaddr_in));
 	file_recv_addr->sin_family = AF_INET;
@@ -787,6 +790,8 @@ void *client_file_recv(void *arg)
 		pFileTransmit->status = TRA_ST_REST;
 		pthread_exit((void *)1);
 	}
+	int on = 1;
+	setsockopt(sockid_recvfile, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
 	
 	struct sockaddr_in file_recv_addr;
 	bzero(&file_recv_addr,sizeof(file_recv_addr));
@@ -824,13 +829,14 @@ void *client_file_recv(void *arg)
 	socklen_t addr_lenth = sizeof(file_send_addr);
 	int connectid = accept(sockid_recvfile,(struct sockaddr *)&file_send_addr,&addr_lenth);
 	
-	printf("client host %d\n",ntohs(file_send_addr.sin_port));
+	//printf("client host %d\n",ntohs(file_send_addr.sin_port));    //调试信息
 	struct timeval tv = {60,0};
 	fd_set readset;
 	FD_ZERO(&readset);
 	FD_SET(connectid,&readset);
 	select(connectid+1,&readset,NULL,NULL,&tv);
 	 
+	bzero(&pFileTransmit->filename,sizeof(pFileTransmit->filename));
 	recv(connectid,pFileTransmit->filename,sizeof(pFileTransmit->filename ),0);
 	printf("%s\n",pFileTransmit->filename); //调试信息	
 	int filefd = open(pFileTransmit->filename,O_RDWR|O_CREAT,0777);
@@ -840,28 +846,25 @@ void *client_file_recv(void *arg)
 		bzero(pFileTransmit,sizeof(struct file_transmit));
 		pFileTransmit->status = TRA_ST_REST;
 		close(filefd);
+		close(connectid);
 		close(sockid_recvfile);
 		pthread_exit((void *)0);
 	}
-	int lenth;
+	//int lenth;
 	FD_ZERO(&readset);
 	FD_SET(connectid,&readset);
 	select(connectid+1,&readset,NULL,NULL,&tv);
 	while(recv(connectid,(char *)&file_recv,sizeof(file_recv),0) > 0)
 	{
-		printf("%s:%d:%s\n",file_recv.name,file_recv.lenth,file_recv.data);       //调试信息
-		if(strncmp(file_recv.name,pFileTransmit->filename,strlen(pFileTransmit->filename)) != 0)
+		//printf("%s:%d:%s\n",file_recv.name,file_recv.lenth,file_recv.data);       //调试信息
+		if(strcmp(file_recv.name,pFileTransmit->filename)!=0 )
 		{
-			printf("unkonw file !\n");
-			//pthread_exit((void *)1);
+			printf("filename mismatch\n");
+			continue;
 		}
-		lenth = strlen(file_recv.data);
-		if(lenth != file_recv.lenth)
-		{	
-			printf("error!\n");
-			//pthread_exit((void *)1);
-		}
-		write(filefd,file_recv.data,strlen(file_recv.data));
+		
+		write(filefd,file_recv.data,file_recv.lenth);
+		bzero(&file_recv,sizeof(file_recv));
 		FD_ZERO(&readset);
 		FD_SET(connectid,&readset);
 		select(connectid+1,&readset,NULL,NULL,&tv);
@@ -915,14 +918,22 @@ void *client_file_send(void *arg)
 		else break;
 	}
 	send(sockid_sendfile,pFileTransmit->filename,strlen(pFileTransmit->filename),0);
+	printf("sendfile %s\n",pFileTransmit->filename);
 	strcpy(sendfile.name,pFileTransmit->filename);
 	
+	usleep(1000*1000);
 	int lenth;
 	while((lenth = read(filefd,sendfile.data,FILE_MAXLEN)) > 0)
 	{
+		// printf("read lenth:%d\n",lenth);
+		// printf("data lenth:%d\n",strlen(sendfile.data));
+		strcpy(sendfile.name,pFileTransmit->filename);
 		sendfile.lenth = lenth;
 		send(sockid_sendfile,(char *)&sendfile,sizeof(sendfile),0);
+		bzero(&sendfile,sizeof(sendfile));
 	}
+	
+	
 	printf("file send over\n");
 	//send(sockid_sendfile,"file send over",strlen("file send over"),0);
 
