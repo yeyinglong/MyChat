@@ -1,39 +1,71 @@
-/*************************************************************************
-    > File Name: ss.c
-    > Author: bsj*/
-
-
-//#include"common.h"
-#include<stdio.h>
-#include<stdlib.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include<string.h>
-#include<errno.h>
-#include<sys/socket.h>
-#include<netinet/in.h>
-#include<netdb.h>
-#include<arpa/inet.h>
-#include<sys/types.h>
-#include<arpa/inet.h>
-#include<unistd.h>
+#include <errno.h>
 #include<time.h>
+#include<pthread.h>
 #include<libxml/parser.h>
 #include<libxml/xmlmemory.h>
 #include<libxml/tree.h>
-#include<mysql/mysql.h>
-#include "log.h"
-#include<poll.h>
-#include<pthread.h>
+#include <mysql/mysql.h>
+#include"log.h"
+#include"service.h"
 
 #define PORT 12321
-#define BUFFER_SIZE 512
+#define BUFFER_SIZE 1024
 #define COUNTOF(x) (sizeof(x)/sizeof((x)[0]))
 
+
+int LOG_FLAG = 4;
 char sendbuf[BUFFER_SIZE];
 char recvbuf[BUFFER_SIZE];
 char stdinbuf[128];
 static int sockfd;
-int logout_res(xmlDocPtr,xmlNodePtr cur);
-int list_res(xmlDocPtr doc,xmlNodePtr cur);
+MYSQL *conn;       //数据库
+const char SEND_CMD[]={
+	"<xml>"
+	"<Fromss>ss</Fromss>"
+	"<CMD>%s</CMD>"
+	"</xml>"
+};
+
+const char SEND_KILL[]={
+	"<xml>"
+	"<Fromss>ss</Fromss>"
+	"<CMD>KILL</CMD>"
+	"<name>%s</name>"
+	"</xml>"
+};
+
+const char ALIVE_MSG[]={
+	"<xml>"
+	"<FromUser>%s</FromUser>"
+	"<CMD>Alive</CMD>"
+	"</xml>"
+};
+
+int startup_handler(void)
+{
+	conn = mysql_init(NULL);
+	char value = 1;
+	mysql_options(conn, MYSQL_OPT_RECONNECT, (char *)&value);
+    //连接数据库
+    if (!mysql_real_connect(conn, "yeyl.site", "root", "201qyzx201", "MyChat", 0, NULL, 0)) 
+    {
+		LOG_ERR_MYSQL(conn);
+    }
+	return 0;
+}
+int login_res(xmlDocPtr doc, xmlNodePtr cur);
+int cmd_res(xmlDocPtr doc, xmlNodePtr cur);
+int send_res(xmlDocPtr doc, xmlNodePtr cur);
+int logout_res(xmlDocPtr doc, xmlNodePtr cur);
+int list_res(xmlDocPtr doc, xmlNodePtr cur);
+int cmd_res(xmlDocPtr doc, xmlNodePtr cur);
+int ss_login();
+int ss_logout();
+
+void *client_alive(void *arg);
 
 typedef int (*pfun)(xmlDocPtr,xmlNodePtr);
 typedef struct{
@@ -41,147 +73,172 @@ typedef struct{
 	pfun func;
 }xml_handler_t;
 
-xml_handler_t xml_handler_table[2]={
+xml_handler_t xml_handler_table[] = {
+	{"ERR",cmd_res},
+	{"res",send_res},
+	{"Login",login_res},
+	{"Logout",logout_res},
 	{"ReqList",list_res},
-	{"Logout",logout_res}
+	{"INFO",cmd_res},
+	{"DEBUG",cmd_res},
+	{"WARNING",cmd_res},
+	{"KILL",cmd_res},
 };
 
-const char REQLIST[]={
-	  "<xml>"
-	   "<Fromss>ss</Fromss>"
-	   "<CMD>Reqlist</CMD>"
-	   "</xml>"
-  };
-
-  const char CHGLOG[]={
-	  "<xml>"
-	  "<Fromss>ss</Fromss>"
-	  "<CMD>CHGLOG</CMD>"
-	  "</xml>"
-  };
-
-  const char QUITUSER[]={
-	  "<xml>"
-	  "<Fromss>ss</Fromss>"
-	  "<CMD>QUITUSER</CMD>"
-	  "<ToUser>%s</ToUser>"
-	  "</xml>"
-  };
-
-
-int main()
+int main(void)
 {
-	struct pollfd fds[2];
-
-	struct hostent*host;
-	if((host=gethostbyname("localhost"))==NULL)
+	//建立连接；
+	struct hostent *host;
+	if((host = gethostbyname("localhost"))==NULL)
 	{
 		perror("gethostbyname");
 		exit(1);
 	}
-		
-	sockfd=socket(AF_INET,SOCK_STREAM,0);
-
+	startup_handler();
+	if((sockfd=socket(AF_INET,SOCK_STREAM,0))==-1)
+	{
+		perror("socket");
+		exit(1);
+	}
 	struct sockaddr_in ss_addr;
 	ss_addr.sin_family = AF_INET;
-	ss_addr.sin_port = htons(PORT);
-	ss_addr.sin_addr = *((struct in_addr*)host->h_addr);
-    if(connect(sockfd,(struct sockaddr*)&ss_addr,sizeof(struct sockaddr))==-1)
+	ss_addr.sin_port =htons(PORT);
+	ss_addr.sin_addr =*((struct in_addr*)host->h_addr);
+	bzero(&(ss_addr.sin_zero),8);
+	if(connect(sockfd,(struct sockaddr*)&ss_addr,sizeof(ss_addr))== -1)
 	{
 		perror("connect");
 		exit(1);
 	}
-
-	fds[0].fd=0;
-	fds[0].events = POLLIN;
-	fds[1].fd = sockfd;
-	fds[1].events = POLLRDNORM;
-
-    char quit_user[]={0};
-	printf("connect success\n");
-	while(1)
-	{
-		poll(fds,2,4000);
-		if(fds[0].revents & POLLIN)
+	//ss保活信息；
+	pthread_t tid_alive;
+	pthread_create(&tid_alive,NULL,client_alive,NULL);
+	//ss_login(); //发送登陆信息
+	
+	fd_set fdsr;
+	struct timeval tv = {4,0};
+	while(1) //循环检测是否有数据变化；
+	{	
+		FD_ZERO(&fdsr);
+		FD_SET(0,&fdsr);
+		FD_SET(sockfd,&fdsr);
+		select(sockfd+1,&fdsr,NULL,NULL,&tv);
+		if(FD_ISSET(0,&fdsr))
 		{
-			printf("TO DO:");
-
-			fgets(stdinbuf,128,stdin);
+			fgets(stdinbuf,sizeof(stdinbuf),stdin);
 			stdinbuf[strlen(stdinbuf)-1]=0;
-			if(strcmp(stdinbuf,"REQLIST")==0)
+			if(strncmp(stdinbuf,"INFO",strlen("INFO"))&&strncmp(stdinbuf,"DEBUG",strlen("DEBUG"))&&strncmp(stdinbuf,"WARNING",strlen("WARNING"))&&strncmp(stdinbuf,"ERR",strlen("ERR"))&&strncmp(stdinbuf,"ReqList",strlen("ReqList")))
 			{
-				sprintf(sendbuf,REQLIST);
-				write(sockfd,sendbuf,strlen(sendbuf));
-			}
-			else if(strcmp(stdinbuf,"CHGLOG")==0)
-			{
-				sprintf(sendbuf,CHGLOG);
-				write(sockfd,sendbuf,strlen(sendbuf));
-			}
-			else if(strncmp(stdinbuf, "QUITUSER", strlen("QUITUSER"))==0)			
-			{
-				strtok(stdinbuf," ");
-				char*str;
-				if((str=strtok(NULL," "))==NULL)
+				if(strncmp(stdinbuf,"KILL",strlen("KILL"))== 0)  //查找kill name；
 				{
-					printf("please input the name who you want to quit\n");
+					strtok(stdinbuf," ");
+					char  * str;
+					if((str = strtok(NULL," ")) == NULL)
+					{
+						printf("please input the name you want to kill!\n");
+					}
+					else
+					{
+						bzero(sendbuf,sizeof(sendbuf));
+						sprintf(sendbuf,SEND_KILL,str);
+						send(sockfd,sendbuf,sizeof(sendbuf),0);
+					}
 				}
+				else if(strncmp(stdinbuf,"exit",strlen("exit"))==0)
+					break;
 				else
-				{
-					strcpy(quit_user,str);
-				}
-				sprintf(sendbuf,QUITUSER,quit_user);
-				write(sockfd ,sendbuf,strlen(sendbuf));
+					printf("no such cmd\n");
+				continue;
 			}
+			sprintf(sendbuf,SEND_CMD,stdinbuf);
+			send(sockfd,sendbuf,sizeof(sendbuf),0);
 		}
-
-		if(fds[1].revents&POLLRDNORM)
+		if(FD_ISSET(sockfd,&fdsr))
 		{
-			xmlDocPtr doc;   //定义解析文档指针
-			xmlNodePtr cur;  //定义结点指针(你需要它为了在各个结点间移动)
-			int recvlen = recv(sockfd, recvbuf, BUFFER_SIZE-1, 0);
-			if(recvlen <= 0)
-				break;
-			recvbuf[recvlen] = 0;
-			doc = xmlParseMemory((const char *)recvbuf, strlen((char *)recvbuf)+1);  
-			if (doc == NULL )
+			int ret;
+			ret =recv(sockfd,recvbuf,sizeof(recvbuf),0);
+			if(ret == 0)
+				continue;
+			xmlDocPtr doc;
+			xmlNodePtr cur;
+			recvbuf[ret] = 0;
+			doc = xmlParseMemory((const char*)recvbuf,strlen((char *)recvbuf)+1);
+			if(doc == NULL)
 			{
-				LOG_WARN("Document not parsed successfully. \n");
+				LOG_WARN("DOCUMENT not parsed successfully\n");
 				continue;
 			}
-			cur = xmlDocGetRootElement(doc);  //确定文档根元素
-			/*检查确认当前文档中包含内容*/
+			cur = xmlDocGetRootElement(doc);
 			if (cur == NULL)
-			{
-
-			}
-			if (xmlStrcmp(cur->name, (const xmlChar *) "xml"))
-			{
-
-			}
-			if((cur = cur->xmlChildrenNode) == NULL)
-				continue;
-			xmlChar *cmd = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+            {
+                LOG_WARN("empty document\n");
+                xmlFreeDoc(doc);
+                continue;
+            }
+            if (xmlStrcmp(cur->name, (const xmlChar *) "xml"))
+            {
+                LOG_WARN("document of the wrong type, root node != xml");
+                xmlFreeDoc(doc);
+                continue;
+            }
+            if((cur = cur->xmlChildrenNode) == NULL)
+                continue;
 			int i;
-			for(i=0; i<COUNTOF(xml_handler_table); i++)
-			{
+            for(i=0; i<COUNTOF(xml_handler_table); i++)
+            {
+				xmlChar *cmd = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
 				if(cmd == NULL)
 					continue;
 				if(strncmp(xml_handler_table[i].operator,(const char *)cmd,strlen(xml_handler_table[i].operator))==0)
 					xml_handler_table[i].func(doc,cur);
-			}
-			free(cmd);
-			xmlFreeDoc(doc);
-	   }
+				free(cmd);
+            }
+            xmlFreeDoc(doc);
+		
+		}
+		
 	}
-   close(sockfd);
-   return 0;
+	pthread_detach(tid_alive);
+	ss_logout(); //发送登出信息；
+	return 0;
 }
 
-int logout_res(xmlDocPtr doc,xmlNodePtr cur)
+int ss_login()
 {
-   	xmlChar*error;
-  	if((cur = cur->next) == NULL)
+	bzero(sendbuf,sizeof(sendbuf));
+	sprintf(sendbuf,SEND_CMD,"Login");
+	send(sockfd,sendbuf,sizeof(sendbuf),0);
+	return 0;
+}
+
+int ss_logout()
+{
+	bzero(sendbuf,sizeof(sendbuf));
+	sprintf(sendbuf,SEND_CMD,"Logout");
+	send(sockfd,sendbuf,sizeof(sendbuf),0);
+	return 0;
+}
+
+void *client_alive(void *arg)
+{
+	char alive_buf[BUFFER_SIZE] = {0};
+	while(1)
+	{
+		sleep(300);
+		sprintf(alive_buf,ALIVE_MSG,"ss");
+		send(sockfd,alive_buf,strlen(alive_buf),0);
+		bzero(alive_buf,sizeof(alive_buf));
+	}
+	return (void *)0;
+}
+
+
+
+
+int login_res(xmlDocPtr doc, xmlNodePtr cur)
+{
+	xmlChar *error;
+	if((cur = cur->next) == NULL)
 		return -1;
 	if(xmlStrcmp(cur->name,(const xmlChar *)"ERROR"))
 		return -1;
@@ -193,7 +250,51 @@ int logout_res(xmlDocPtr doc,xmlNodePtr cur)
 	free(error);
 	return 0;
 }
-
+int cmd_res(xmlDocPtr doc, xmlNodePtr cur)
+{
+	xmlChar *error;
+	if((cur = cur->next) == NULL)
+		return -1;
+	if(xmlStrcmp(cur->name,(const xmlChar *)"ERROR"))
+		return -1;
+	
+	error = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+	if(error == NULL)
+		return -1;
+	printf("%s\n",error);
+	free(error);
+	return 0;
+}
+int send_res(xmlDocPtr doc, xmlNodePtr cur)
+{
+	xmlChar *error;
+	if((cur = cur->next) == NULL)
+		return -1;
+	if(xmlStrcmp(cur->name,(const xmlChar *)"ERROR"))
+		return -1;
+	
+	error = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+	if(error == NULL)
+		return -1;
+	printf("%s\n",error);
+	free(error);
+	return 0;
+}
+int logout_res(xmlDocPtr doc, xmlNodePtr cur)
+{
+	xmlChar *error;
+	if((cur = cur->next) == NULL)
+		return -1;
+	if(xmlStrcmp(cur->name,(const xmlChar *)"ERROR"))
+		return -1;
+	
+	error = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+	if(error == NULL)
+		return -1;
+	printf("%s\n",error);
+	free(error);
+	return 0;
+}
 int list_res(xmlDocPtr doc, xmlNodePtr cur)
 {
 	xmlChar *user_list;
@@ -205,10 +306,7 @@ int list_res(xmlDocPtr doc, xmlNodePtr cur)
 	if(user_list == NULL)
 		return 0;
 	printf("%s\n",user_list);
-	if(send(sockfd,"OK",strlen("OK"),0)<0)
-		LOG_ERR("send");
+	send(sockfd,"OK",strlen("OK"),0);
 	free(user_list);
 	return 1;
 }
-
-

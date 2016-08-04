@@ -11,6 +11,8 @@
 #include <time.h>
 #include <poll.h>
 #include <pthread.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
 #include <libxml/parser.h>  
 #include <libxml/xmlmemory.h>
@@ -23,6 +25,9 @@
 #define PORT 12321
 #define BUFFER_SIZE 512
 #define COUNTOF(x) (sizeof(x)/sizeof((x)[0]))
+
+int LOG_FLAG = 4;
+
 char sendbuf[BUFFER_SIZE];
 char recvbuf[BUFFER_SIZE];
 char stdinbuf[128];
@@ -35,7 +40,7 @@ struct file_transmit{
 	char sendname[32];
 	char recvname[32];
 	char filename[32];
-}FileTransmit,*pFileTransmit;
+}*pFileTransmit;
 //定义文件传输状态，正在传输时或正在准备时无法再进行文件传输
 #define TRA_ST_RUN 1  //传输状态
 #define TRA_ST_REST 0  //文件传输的休息状态
@@ -49,6 +54,12 @@ static int sockfd;
 #define U_ST_LOGING 2   //正在登陆
 #define U_ST_CHAT 3   //正在聊天   
 
+#define FILE_MAXLEN 1024
+struct waving_file{               //用于文件传输的结构体
+	char name[32];              //文件名，用于检查传输文件的正确性
+	int lenth;                     //文件内容的长度，用于校验信息的完整性
+	char data[FILE_MAXLEN];
+};
 
 /************一套输入指令:
 *************logout : 登出当前账号
@@ -122,7 +133,7 @@ const char FILE_RECV[]={               //接收端发给服务器的包
 const char C_FILE_SEND_ERR[]={    //发送端出现异常时，发送给服务器的包
 	"<xml>"
 	"<FromUser>%s</FromUser>"
-	"<CMD>FileSend</CMD>"
+	"<CMD>FileSendError</CMD>"
 	"<ToUser>%s</ToUser>"
 	"<ERROR>%s</ERROR>"
 	"</xml>"
@@ -131,7 +142,7 @@ const char C_FILE_SEND_ERR[]={    //发送端出现异常时，发送给服务�
 const char C_FILE_RECV_ERR[]={      //接收端出现异常时，发送给服务器的包
 	"<xml>"
 	"<FromUser>%s</FromUser>"
-	"<CMD>FileRecv</CMD>"
+	"<CMD>FileRecvError</CMD>"
 	"<ToUser>%s</ToUser>"
 	"<ERROR>%s</ERROR>"
 	"</xml>"
@@ -374,6 +385,7 @@ when_getmessage:
 			break;
 	}
 	pthread_cancel(tid_alive);
+	free(pFileTransmit);
 	close(sockfd);
 	exit(0);
 }
@@ -651,7 +663,7 @@ int file_send_to(xmlDocPtr doc, xmlNodePtr cur)
 		return -1;
 	if(pFileTransmit->status != TRA_ST_REST)
 	{
-		sprintf(sendbuf,C_FILE_RECV_ERR,"cannot receive");
+		sprintf(sendbuf,C_FILE_RECV_ERR,username,userfrom,"cannot receive");
 		send(sockfd,sendbuf,sizeof(sendbuf),0);
 		return 0;
 	}
@@ -660,7 +672,7 @@ int file_send_to(xmlDocPtr doc, xmlNodePtr cur)
 	char c = getchar();
 	if(c == 'N' || c == 'n')
 	{
-		sprintf(sendbuf,C_FILE_RECV_ERR,"refuse");
+		sprintf(sendbuf,C_FILE_RECV_ERR,username,userfrom,"refuse");
 		send(sockfd,sendbuf,sizeof(sendbuf),0);
 		free(userfrom);
 		return 0;
@@ -678,8 +690,14 @@ int file_send_to(xmlDocPtr doc, xmlNodePtr cur)
 }
 int file_recv_from(xmlDocPtr doc, xmlNodePtr cur)
 {
+	struct sockaddr_in *file_recv_addr = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
+	bzero(file_recv_addr,sizeof(struct sockaddr_in));
+	file_recv_addr->sin_family = AF_INET;
+	
 	xmlChar *userto;
 	xmlChar *error;
+	xmlChar *recv_ip;
+	xmlChar *recv_port;
 	if((cur = cur->next) == NULL)
 		return -1;
 	if(xmlStrcmp(cur->name,(const xmlChar *)"FromUser"))
@@ -696,12 +714,61 @@ int file_recv_from(xmlDocPtr doc, xmlNodePtr cur)
 	userto = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
 	if(strcmp((char *)userto,pFileTransmit->recvname)!=0)
 	{
-		sprintf(sendbuf,C_FILE_SEND_ERR,"mismatching");
+		sprintf(sendbuf,C_FILE_SEND_ERR,username,userto,"mismatching");
 		send(sockfd,sendbuf,strlen(sendbuf),0);
+		bzero(pFileTransmit,sizeof(struct file_transmit));
+		pFileTransmit->status = TRA_ST_REST;
 		return -1;
-	}	
+	}
+	
+	if((cur = cur->next) == NULL)
+	{
+		sprintf(sendbuf,C_FILE_SEND_ERR,username,userto,"misaddr");
+		send(sockfd,sendbuf,strlen(sendbuf),0);
+		bzero(pFileTransmit,sizeof(struct file_transmit));
+		pFileTransmit->status = TRA_ST_REST;
+		return -1;
+	}
+	if((cur = cur->xmlChildrenNode) == NULL)
+	{
+		sprintf(sendbuf,C_FILE_SEND_ERR,username,userto,"misaddrip");
+		send(sockfd,sendbuf,strlen(sendbuf),0);
+		bzero(pFileTransmit,sizeof(struct file_transmit));
+		pFileTransmit->status = TRA_ST_REST;
+		return -1;
+	}
+	recv_ip = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+	if(recv_ip == NULL)
+	{		
+		sprintf(sendbuf,C_FILE_SEND_ERR,username,userto,"addrip is NULL");
+		send(sockfd,sendbuf,strlen(sendbuf),0);
+		bzero(pFileTransmit,sizeof(struct file_transmit));
+		pFileTransmit->status = TRA_ST_REST;
+		return -1;		
+	}
+	if((cur = cur->next) == NULL)
+	{
+		sprintf(sendbuf,C_FILE_SEND_ERR,username,userto,"misaddrport");
+		send(sockfd,sendbuf,strlen(sendbuf),0);
+		bzero(pFileTransmit,sizeof(struct file_transmit));
+		pFileTransmit->status = TRA_ST_REST;
+		return -1;
+	}
+	recv_port = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
+	if(recv_port == NULL)
+	{		
+		sprintf(sendbuf,C_FILE_SEND_ERR,username,userto,"addrport is NULL");
+		send(sockfd,sendbuf,strlen(sendbuf),0);
+		bzero(pFileTransmit,sizeof(struct file_transmit));
+		pFileTransmit->status = TRA_ST_REST;
+		return -1;
+	}
+	
+	file_recv_addr->sin_port = htons(atoi((char *)recv_port));
+	inet_pton(AF_INET, (char *)recv_ip, &(file_recv_addr->sin_addr));
+	
 	pthread_t tid_FileTra;
-	pthread_create(&tid_FileTra,NULL,client_file_send,NULL);
+	pthread_create(&tid_FileTra,NULL,client_file_send,(void *)file_recv_addr);
 	pthread_detach(tid_FileTra);
 	free(userto);
 	return 0;
@@ -709,10 +776,161 @@ int file_recv_from(xmlDocPtr doc, xmlNodePtr cur)
 
 void *client_file_recv(void *arg)
 {
+	struct waving_file file_recv;
+	bzero(&file_recv,sizeof(file_recv));
+	int sockid_recvfile = socket(AF_INET,SOCK_STREAM,0);
+	if(sockid_recvfile < 0)
+	{
+		sprintf(sendbuf,C_FILE_RECV_ERR,username,pFileTransmit->sendname,"cannot receive");
+		send(sockfd,sendbuf,sizeof(sendbuf),0);
+		perror("socket");
+		bzero(pFileTransmit,sizeof(struct file_transmit));
+		pFileTransmit->status = TRA_ST_REST;
+		pthread_exit((void *)1);
+	}
+	
+	struct sockaddr_in file_recv_addr;
+	bzero(&file_recv_addr,sizeof(file_recv_addr));
+	file_recv_addr.sin_family = AF_INET;
+	file_recv_addr.sin_port = htons(11111);
+	inet_pton(AF_INET,"127.0.0.1",&file_recv_addr.sin_addr);
+	
+	if(bind(sockid_recvfile,(struct sockaddr *)&file_recv_addr,sizeof(file_recv_addr)) != 0)
+	{
+		sprintf(sendbuf,C_FILE_RECV_ERR,username,pFileTransmit->sendname,"cannot receive");
+		send(sockfd,sendbuf,sizeof(sendbuf),0);
+		perror("connect");
+		bzero(pFileTransmit,sizeof(struct file_transmit));
+		pFileTransmit->status = TRA_ST_REST;
+		pthread_exit((void *)1);
+	}
+	if(listen(sockid_recvfile,5) < 0)
+	{
+		sprintf(sendbuf,C_FILE_RECV_ERR,username,pFileTransmit->sendname,"cannot receive");
+		send(sockfd,sendbuf,sizeof(sendbuf),0);
+		perror("listen");
+		bzero(pFileTransmit,sizeof(struct file_transmit));
+		pFileTransmit->status = TRA_ST_REST;
+		pthread_exit((void *)1);
+	}
+	pFileTransmit->status = TRA_ST_RUN;
+	
+
+	
+	sprintf(sendbuf,FILE_RECV,username,pFileTransmit->sendname,"127.0.0.1","11111");
+	
+	send(sockfd,sendbuf,strlen(sendbuf),0);
+	
+	struct sockaddr_in file_send_addr;
+	socklen_t addr_lenth = sizeof(file_send_addr);
+	int connectid = accept(sockid_recvfile,(struct sockaddr *)&file_send_addr,&addr_lenth);
+	
+	printf("client host %d\n",ntohs(file_send_addr.sin_port));
+	struct timeval tv = {60,0};
+	fd_set readset;
+	FD_ZERO(&readset);
+	FD_SET(connectid,&readset);
+	select(connectid+1,&readset,NULL,NULL,&tv);
+	 
+	recv(connectid,pFileTransmit->filename,sizeof(pFileTransmit->filename ),0);
+	printf("%s\n",pFileTransmit->filename); //调试信息
+	int filefd = open(pFileTransmit->filename,O_RDWR|O_CREAT,0777);
+	if(filefd < 0)
+	{
+		printf("file create error!\n");
+		bzero(pFileTransmit,sizeof(struct file_transmit));
+		pFileTransmit->status = TRA_ST_REST;
+		close(filefd);
+		close(sockid_recvfile);
+		pthread_exit((void *)0);
+	}
+	int lenth;
+	FD_ZERO(&readset);
+	FD_SET(connectid,&readset);
+	select(connectid+1,&readset,NULL,NULL,&tv);
+	while(recv(connectid,(char *)&file_recv,sizeof(file_recv),0) > 0)
+	{
+		printf("%s:%d:%s\n",file_recv.name,file_recv.lenth,file_recv.data);       //调试信息
+		if(strncmp(file_recv.name,pFileTransmit->filename,strlen(pFileTransmit->filename)) != 0)
+		{
+			printf("unkonw file !\n");
+			//pthread_exit((void *)1);
+		}
+		lenth = strlen(file_recv.data);
+		if(lenth != file_recv.lenth)
+		{	
+			printf("error!\n");
+			//pthread_exit((void *)1);
+		}
+		write(filefd,file_recv.data,strlen(file_recv.data));
+		FD_ZERO(&readset);
+		FD_SET(connectid,&readset);
+		select(connectid+1,&readset,NULL,NULL,&tv);
+	}
+	printf("file send over\n");
+	bzero(pFileTransmit,sizeof(struct file_transmit));
+	pFileTransmit->status = TRA_ST_REST;
+	close(filefd);
+	close(connectid);
+	close(sockid_recvfile);
 	pthread_exit((void *)0);
 }
 
 void *client_file_send(void *arg)
 {
+	struct sockaddr_in file_recv_addr = *((struct sockaddr_in *)arg);
+	struct waving_file sendfile;
+	bzero(&sendfile,sizeof(sendfile));
+	int filefd;
+	int sockid_sendfile = socket(AF_INET,SOCK_STREAM,0);
+	if(sockid_sendfile < 0)
+	{
+		bzero(pFileTransmit,sizeof(struct file_transmit));
+		pFileTransmit->status = TRA_ST_REST;
+		free(arg);
+		close(sockid_sendfile);
+		pthread_exit((void *)1);
+	}
+	if(connect(sockid_sendfile,(struct sockaddr *)&file_recv_addr,sizeof(file_recv_addr)) < 0)
+	{
+		bzero(pFileTransmit,sizeof(struct file_transmit));
+		pFileTransmit->status = TRA_ST_REST;
+		free(arg);
+		close(sockid_sendfile);
+		pthread_exit((void *)1);
+	}
+	
+	pFileTransmit->status = TRA_ST_RUN;
+	while(1)
+	{
+		printf("file name : ");
+		fgets(stdinbuf,sizeof(stdinbuf),stdin);
+		stdinbuf[strlen(stdinbuf)-1] = '\0';
+		strcpy(pFileTransmit->filename,stdinbuf);
+		filefd = open(pFileTransmit->filename,O_RDONLY);
+		if(filefd < 0)
+		{
+			printf("cannot open this file!\n");
+			continue;
+		}
+		else break;
+	}
+	send(sockid_sendfile,pFileTransmit->filename,strlen(pFileTransmit->filename),0);
+	strcpy(sendfile.name,pFileTransmit->filename);
+	
+	int lenth;
+	while((lenth = read(filefd,sendfile.data,FILE_MAXLEN)) > 0)
+	{
+		sendfile.lenth = lenth;
+		send(sockid_sendfile,(char *)&sendfile,sizeof(sendfile),0);
+	}
+	printf("file send over\n");
+	//send(sockid_sendfile,"file send over",strlen("file send over"),0);
+	
+	bzero(pFileTransmit,sizeof(struct file_transmit));
+	pFileTransmit->status = TRA_ST_REST;
+	free(arg);
+	close(filefd);
+	close(sockid_sendfile);
 	pthread_exit((void *)0);
 }

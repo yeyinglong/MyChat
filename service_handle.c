@@ -11,6 +11,7 @@
 #include "log.h"
 #include "service.h"
 
+int LOG_FLAG = 4;
 const char SEND_TEXT[]={
 	"<xml>"
 	"<CMD>msg</CMD>"
@@ -90,6 +91,18 @@ const char FILE_RECV_ERR[]={      //发送端出现异常时，服务器反馈�
 
 #endif
 
+const char KILL_RES[]={
+	"<xml>"
+	"<CMD>KILL</CMD>"
+	"<ERROR>%s</ERROR>"
+	"</xml>"
+};
+const char SS_RES[]={
+	"<xml>"
+	"<CMD>%s</CMD>"
+	"<ERROR>%s</ERROR>"
+	"</xml>"
+};
 #define COUNTOF(x) (sizeof(x)/sizeof((x)[0]))
 #define SEND_BUF_SIZE 1024
 #define RECV_BUF_SIZE 1024
@@ -126,6 +139,11 @@ int close_handler(pClient pclt)
 		pcht = list_entry(pos, Chater, entry);
 		if(pcht->pclt == pclt)
 		{
+			sprintf(sendbuf, LOGOUT_RES, "success");
+			if(send(pclt->fd, sendbuf, strlen(sendbuf), 0))
+			{
+				LOG_ERR("%s:%d send",__func__,__LINE__);
+			}
 			list_del(pos);
 			free(pos);
 			pos = NULL;
@@ -292,7 +310,6 @@ int user_logout(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 	return 0;
 }
 
-
 /*通过ss程序让用户下线*/
 int ss_QUITUSER(pClient pclt,xmlDocPtr doc,xmlNodePtr cur,xmlChar*fromss)
 {
@@ -373,10 +390,10 @@ int user_FileSend(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser
 	list_for_each(pos, &head)    //查询设备是否已经连接
 	{
 		pcht = list_entry(pos, Chater, entry);
-		if(strcmp(pcht->userName, (const char*)fromUser) == 0)
+		if(strcmp(pcht->userName, (const char*)toUser) == 0)
 		{
 			sprintf(sendbuf, FILE_SEND_TO, fromUser);
-			if(send(pclt->fd, sendbuf, strlen(sendbuf), 0) < 0)
+			if(send(pcht->pclt->fd, sendbuf, strlen(sendbuf), 0) < 0)
 			{
 				LOG_ERR("%s:%d send",__func__,__LINE__);
 				strcpy(res, "sendError");
@@ -406,16 +423,18 @@ int user_FileRecv(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser
 	xmlChar *toUser = NULL;
 	xmlChar *ip = NULL;
 	xmlChar *port = NULL;
+	cur = cur->next;
 	toUser = xmlGetNodeText(doc, cur, "ToUser");
 	if(toUser == NULL)
 		return 0;
 	cur = cur->next;
-	if(xmlStrcmp(cur->name,(const xmlChar*)"ADDR") !=0 )
+	if(xmlStrcmp(cur->name,(const xmlChar*)"ADDR") ==0 )
 	{
 		cur = cur->xmlChildrenNode;
 		ip = xmlGetNodeText(doc, cur, "IP");
 		if(ip == NULL) goto user_FileRecv_free;
 
+		cur = cur->next;
 		port = xmlGetNodeText(doc, cur, "PORT");
 		if(port == NULL) goto user_FileRecv_free;
 	}
@@ -424,10 +443,10 @@ int user_FileRecv(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser
 	list_for_each(pos, &head) 
 	{
 		pcht = list_entry(pos, Chater, entry);
-		if(strcmp(pcht->userName, (const char*)fromUser) == 0)
+		if(strcmp(pcht->userName, (const char*)toUser) == 0)
 		{
 			sprintf(sendbuf, FILE_RECV_FROM, fromUser, ip, port);
-			if(send(pclt->fd, sendbuf, strlen(sendbuf), 0) < 0)
+			if(send(pcht->pclt->fd, sendbuf, strlen(sendbuf), 0) < 0)
 			{
 				LOG_ERR("%s:%d send",__func__,__LINE__);
 			}
@@ -472,9 +491,12 @@ int user_FileSendErro(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *from
 
 int user_FileRecvErro(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 {
+	cur = cur->next;
 	xmlChar *toUser = xmlGetNodeText(doc, cur, "ToUser");
 	if(toUser == NULL)
 		return 0;
+		
+	cur = cur->next;
 	xmlChar *error = xmlGetNodeText(doc, cur, "ERROR");
 	if(error == NULL) 
 	{
@@ -499,6 +521,111 @@ int user_FileRecvErro(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *from
 	return 0;
 }
 
+
+int ss_err(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
+{
+	LOG_FLAG = 1;
+	bzero(sendbuf,sizeof(sendbuf));
+	if(LOG_FLAG == 1)
+	{
+		sprintf(sendbuf,SS_RES,"ERR","success");
+		send(pclt->fd,sendbuf,sizeof(sendbuf),0);
+	}
+	else
+	{
+		sprintf(sendbuf,SS_RES,"ERR","fail");
+		send(pclt->fd,sendbuf,sizeof(sendbuf),0);
+	}
+	
+	return 0;
+}
+int ss_info(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
+{
+	LOG_FLAG = 4;
+	LOG_INFO("info");
+	bzero(sendbuf,sizeof(sendbuf));
+	if(LOG_FLAG == 4)
+	{
+		sprintf(sendbuf,SS_RES,"INFO","success");
+		send(pclt->fd,sendbuf,sizeof(sendbuf),0);
+	}
+	else
+	{
+		sprintf(sendbuf,SS_RES,"INFO","fail");
+		send(pclt->fd,sendbuf,sizeof(sendbuf),0);
+	}
+	return 0;
+}
+int ss_debug(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
+{
+	LOG_FLAG = 3;
+	LOG_INFO("debug");
+	bzero(sendbuf,sizeof(sendbuf));
+	if(LOG_FLAG == 3)
+	{
+		sprintf(sendbuf,SS_RES,"DEBUG","success");
+		send(pclt->fd,sendbuf,sizeof(sendbuf),0);
+	}
+	else
+	{
+		sprintf(sendbuf,SS_RES,"DEBUG","fail");
+		send(pclt->fd,sendbuf,sizeof(sendbuf),0);
+	}
+	return 0;
+}
+int ss_warning(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
+{
+	LOG_FLAG = 2;
+	LOG_INFO("warning");
+	bzero(sendbuf,sizeof(sendbuf));
+	if(LOG_FLAG == 2)
+	{
+		sprintf(sendbuf,SS_RES,"WARNING","success");
+		send(pclt->fd,sendbuf,sizeof(sendbuf),0);
+	}
+	else
+	{
+		sprintf(sendbuf,SS_RES,"WARNING","fail");
+		send(pclt->fd,sendbuf,sizeof(sendbuf),0);
+	}
+	return 0;
+}
+int ss_kill(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
+{
+
+	char res[16] = "kill success";
+	cur = cur->next;
+	xmlChar *toUser = xmlGetNodeText(doc, cur, "name");
+	if(toUser == NULL)
+		return 0;
+	struct list_head *pos;
+	list_for_each(pos, &head)    //查询设备是否已经连接
+	{
+		pcht = list_entry(pos, Chater, entry);
+		if(strcmp(pcht->userName, (const char*)toUser) == 0)
+		{
+			sprintf(sendbuf, LOGOUT_RES, "success");
+			if(send(pcht->pclt->fd, sendbuf, strlen(sendbuf), 0))
+			{
+				LOG_ERR("%s:%d send",__func__,__LINE__);
+			}
+			list_del(pos);			//从链表删除结点
+			free(pcht);	
+			LOG_INFO("client %s bekilled", inet_ntoa(pclt->client_addr.sin_addr));
+			break;
+		}
+	}
+	if(pos ==  &head)
+	{
+		strcpy(res, "no such user");
+	}
+	sprintf(sendbuf, SS_RES,"KILL", res);
+	if(send(pclt->fd, sendbuf, strlen(sendbuf), 0) < 0)
+		LOG_ERR()
+	xmlFree(toUser); 
+	return 0;
+}
+
 typedef struct
 {
 	const char *cmd;
@@ -513,22 +640,20 @@ chat_handle_t chat_handle_table[] = {
 	{"Alive", user_Alive},
 	{"FileSend", user_FileSend},
 	{"FileRecv", user_FileRecv},
-	{"FileSend", user_FileSendErro},
-	{"FileRecv", user_FileRecvErro},
+	{"FileSendError", user_FileSendErro},
+	{"FileRecvError", user_FileRecvErro},
 };
-
-typedef struct
-{
-	const char*cmd;
-	int (*handler)(pClient,xmlDocPtr,xmlNodePtr,xmlChar*);
-}ss_handle_t;
-
-ss_handle_t ss_handle_table[2]={
-	{"Reqlist",user_ReqList},
-//	{"CHGLOG",ss_CHGLOG},
-	{"QUITUSER",ss_QUITUSER},
+chat_handle_t ss_handle_table[] = {
+	{"Login", user_login},
+	{"Logout", user_logout},
+	{"ReqList", user_ReqList},
+	{"Alive", user_Alive},
+	{"ERR",ss_err},
+	{"DEBUG",ss_debug},
+	{"WARNING",ss_warning},
+	{"INFO",ss_info},
+	{"KILL",ss_kill},
 };
-
 
 /*socket 接收数据事件， 返回-1关闭服务器*/
 int recv_handler(pClient pclt, char *recvbuf,int recvlen)
@@ -586,29 +711,27 @@ int recv_handler(pClient pclt, char *recvbuf,int recvlen)
 		xmlFree(fromUser);
 		xmlFree(cmd);
 	}
-
-	else if(xmlStrcmp(cur->name,(const xmlChar*)"Fromss")==0)//接收来自ss控制信息
+	if(xmlStrcmp(cur->name, (const xmlChar *)"Fromss") == 0)
 	{
-		xmlChar*fromss=NULL;
-		xmlChar*cmd=NULL;
-		fromss=xmlGetNodeText(doc,cur,"Fromss");
-		if(fromss==NULL)
-			return 0;
-		cur=cur->next;
-		cmd=xmlGetNodeText(doc,cur,"CMD");
-		if(cmd==NULL)
+		xmlChar *fromss = NULL;
+		xmlChar *cmd = NULL; 
+		fromss = xmlGetNodeText(doc, cur, "Fromss");
+		if(fromss == NULL)
+			goto recv_handler_release;
+		cur = cur->next;
+		cmd = xmlGetNodeText(doc, cur, "CMD");
+		if(cmd == NULL)
 		{
 			xmlFree(fromss);
 			goto recv_handler_release;
 		}
-
-		LOG_INFO("Fromss:%s CMD:%s",fromss,cmd);
+		LOG_INFO("Fromss:%s CMD:%s", fromss, cmd);
 		int i;
-		for(i=0;i<COUNTOF(ss_handle_table);i++)
+		for(i=0; i<COUNTOF(ss_handle_table); i++)
 		{
-			if(strcmp((char*)cmd,ss_handle_table[i].cmd)==0)
+			if(strcmp((char*)cmd, ss_handle_table[i].cmd) == 0)
 			{
-				ss_handle_table[i].handler(pclt,doc,cur,fromss);
+				ss_handle_table[i].handler(pclt, doc, cur,fromss);
 				break;
 			}
 		}
