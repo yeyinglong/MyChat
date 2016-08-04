@@ -165,11 +165,6 @@ void *client_alive(void *);   //线程函数，用于定时向服务器发送信
 int load_user();     //用于登陆账号
 int regist_user();   //注册账号
 
-// typedef int (*xml_handle_t)(xmlDocPtr, xmlNodePtr);
-// xml_handle_t xml_handle_table[] = {
-	// recv_message,
-    // login_res
-// };
 
 typedef int (*pfun)(xmlDocPtr,xmlNodePtr);
 
@@ -231,87 +226,99 @@ int main(void)
 	pthread_t tid_alive;
 	pthread_create(&tid_alive,NULL,client_alive,NULL);
 	pthread_detach(tid_alive);
-	
-	
-	// //在服务器上登陆账号
-	// if(load_user() !=0)
-	// {
-	// 	printf("load user error!\n");
-	// 	user_status = U_ST_LOGOUT;
-	// }
-	// else
-	// {
-	// 	sprintf(sendbuf, LOGIN_MSG, username);
-	// 	send(sockfd, sendbuf, strlen(sendbuf), 0);
-	// 	user_status = U_ST_LOGIN;
-	// }
    
     fds[0].fd = 0;
     fds[0].events = POLLIN;
     fds[1].fd = sockfd;
     fds[1].events = POLLRDNORM;
-
-when_getmessage:
-	while(user_status != U_ST_LOGOUT)
+	printf("input login to login again ,regist to register a new account or quit to exit\n");
+	while(1)
     {
 		bzero(sendbuf,sizeof(sendbuf));
         poll(fds, 2, 4000);
         if(fds[0].revents & POLLIN)
         {
-			fgets(stdinbuf,sizeof(stdinbuf),stdin);
-			stdinbuf[strlen(stdinbuf)-1] = '\0';
-			if(strncmp(stdinbuf,"logout",strlen("logout")) ==0)
+			if(user_status != U_ST_LOGOUT && user_status != U_ST_LOGING)
 			{
-				sprintf(sendbuf,LOGOUT_MSG,username);
-				send(sockfd,sendbuf,strlen(sendbuf),0);
-				user_status = U_ST_LOGOUT;	
-			}
-			else if(strncmp(stdinbuf,"show list",strlen("show list")) == 0)
-			{
-				sprintf(sendbuf,REQLIST,username);
-				send(sockfd,sendbuf,strlen(sendbuf),0);
-			}
-			else if(strncmp(stdinbuf,"chat",strlen("chat")) == 0) //chat name
-			{
-				strtok(stdinbuf," ");
-				char *str;
-				if((str = strtok(NULL," ")) == NULL)
+				fgets(stdinbuf,sizeof(stdinbuf),stdin);
+				stdinbuf[strlen(stdinbuf)-1] = '\0';
+				if(strncmp(stdinbuf,"logout",strlen("logout")) ==0)
 				{
-					printf("please input the name you want to chat with!\n");
+					sprintf(sendbuf,LOGOUT_MSG,username);
+					send(sockfd,sendbuf,strlen(sendbuf),0);
+					user_status = U_ST_LOGOUT;	
 				}
-				else
+				else if(strncmp(stdinbuf,"show list",strlen("show list")) == 0)
 				{
-					strcpy(friendname,str);
-					user_status = U_ST_CHAT;
+					sprintf(sendbuf,REQLIST,username);
+					send(sockfd,sendbuf,strlen(sendbuf),0);
 				}
-			}
-			else if(strncmp(stdinbuf,"send file",strlen("send file")) == 0)
-			{
+				else if(strncmp(stdinbuf,"chat",strlen("chat")) == 0) //chat name
+				{
+					strtok(stdinbuf," ");
+					char *str;
+					if((str = strtok(NULL," ")) == NULL)
+					{
+						printf("please input the name you want to chat with!\n");
+					}
+					else
+					{
+						strcpy(friendname,str);
+						user_status = U_ST_CHAT;
+					}
+				}
+				else if(strncmp(stdinbuf,"send file",strlen("send file")) == 0)
+				{
 
-				printf("friend name:");
-				fgets(pFileTransmit->recvname,sizeof(pFileTransmit->recvname),stdin);
-				pFileTransmit->recvname[strlen(pFileTransmit->recvname)-1] = '\0';
-				
-				pFileTransmit->status = TRA_ST_PREP;
+					printf("friend name:");
+					fgets(pFileTransmit->recvname,sizeof(pFileTransmit->recvname),stdin);
+					pFileTransmit->recvname[strlen(pFileTransmit->recvname)-1] = '\0';
+					
+					pFileTransmit->status = TRA_ST_PREP;
 
-				strcpy(pFileTransmit->sendname,username);
-				// printf("file name:");
-				// fgets(filename,sizeof(filename),stdin);
-				// filename[strlen(filename)-1] = '\0';
-				sprintf(sendbuf,FILE_SEND,pFileTransmit->sendname,pFileTransmit->recvname);
-				send(sockfd,sendbuf,strlen(sendbuf),0);
-			}
-			else
-			{
-				if(user_status == U_ST_CHAT)
+					strcpy(pFileTransmit->sendname,username);
+					// printf("file name:");
+					// fgets(filename,sizeof(filename),stdin);
+					// filename[strlen(filename)-1] = '\0';
+					sprintf(sendbuf,FILE_SEND,pFileTransmit->sendname,pFileTransmit->recvname);
+					send(sockfd,sendbuf,strlen(sendbuf),0);
+				}
+				else if(user_status == U_ST_CHAT)
 				{
 					sprintf(sendbuf,SEND_MSG,username,friendname,stdinbuf);
 					send(sockfd,sendbuf,strlen(sendbuf),0);
 				}
 				else
 				{
-					printf("please choose you friend to chat whih!\n");
+					printf("input chat somebody to chat, input show list to show friend who online\n");
 				}
+			}
+			else
+			{
+				char *this_status[4] = {"logout","login","loging","chat"};
+				fgets(stdinbuf,sizeof(stdinbuf),stdin);
+				stdinbuf[strlen(stdinbuf)-1] = '\0';
+				if(strncmp(stdinbuf,"login",strlen("login")) ==0)
+				{
+					if(load_user() == 0)
+					{
+						sprintf(sendbuf, LOGIN_MSG, username);
+						if(send(sockfd, sendbuf, strlen(sendbuf), 0)<0)
+							printf("send %d:%s", errno, strerror(errno));
+						else
+						{
+							user_status = U_ST_LOGIN;
+							continue;
+						}
+					}
+				}
+				else if(strncmp(stdinbuf,"regist",strlen("regist")) == 0)
+					regist_user();
+				else if(strncmp(stdinbuf,"quit",strlen("quit")) == 0)
+					break;
+				
+				printf("user_status:%s\n",this_status[user_status]);
+				printf("input login to login again ,regist to register a new account or quit to exit\n");
 			}
         }
         if(fds[1].revents & POLLRDNORM)
@@ -323,7 +330,6 @@ when_getmessage:
 			{
 				printf("connect is broken!\n");
 				user_status = U_ST_LOGOUT;
-				break;
 			}
             recvbuf[recvlen] = 0;
             doc = xmlParseMemory((const char *)recvbuf, strlen((char *)recvbuf)+1);  
@@ -361,29 +367,6 @@ when_getmessage:
             xmlFreeDoc(doc);
         }
     }
-	while(1)
-	{
-		if(user_status != U_ST_LOGOUT && user_status != U_ST_LOGING)
-			goto when_getmessage; 
-		char *this_status[4] = {"logout","login","loging","chat"};
-		printf("user_status:%s\n",this_status[user_status]);
-		printf("input login to login again ,regist to register a new account or quit to exit\n");
-		fgets(stdinbuf,sizeof(stdinbuf),stdin);
-		stdinbuf[strlen(stdinbuf)-1] = '\0';
-		if(strncmp(stdinbuf,"login",strlen("login")) ==0)
-		{
-			if(load_user() == 0)
-			{
-				sprintf(sendbuf, LOGIN_MSG, username);
-				send(sockfd, sendbuf, strlen(sendbuf), 0);
-				user_status = U_ST_LOGIN;
-			}
-		}
-		else if(strncmp(stdinbuf,"regist",strlen("regist")) == 0)
-			regist_user();
-		else if(strncmp(stdinbuf,"quit",strlen("quit")) == 0)
-			break;
-	}
 	pthread_cancel(tid_alive);
 	free(pFileTransmit);
 	close(sockfd);
@@ -531,12 +514,12 @@ int mysql_query_my(MYSQL *conn, const char *str)
 void *client_alive(void *arg)
 {
 	char alive_buf[BUFFER_SIZE] = {0};
-	sprintf(alive_buf,ALIVE_MSG,username);
 	while(1)
 	{
-		sleep(300);
+		sleep(10);
 		if(user_status == U_ST_LOGIN || user_status == U_ST_CHAT)
 		{
+			sprintf(alive_buf,ALIVE_MSG,username);
 			send(sockfd,alive_buf,strlen(alive_buf),0);
 		}
 	}
@@ -606,7 +589,8 @@ int send_res(xmlDocPtr doc, xmlNodePtr cur)
 	error = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
 	if(error == NULL)
 		return -1;
-	printf("%s\n",error);
+	if(strcmp((char *)error,"success"))
+		printf("%s\n",error);
 	free(error);
 	return 0;
 }
@@ -621,6 +605,7 @@ int logout_res(xmlDocPtr doc, xmlNodePtr cur)
 	error = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
 	if(error == NULL)
 		return -1;
+	user_status = U_ST_LOGOUT;
 	printf("%s\n",error);
 	free(error);
 	return 0;
