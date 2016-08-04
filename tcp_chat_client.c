@@ -61,6 +61,9 @@ struct waving_file{               //用于文件传输的结构体
 	char data[FILE_MAXLEN];
 };
 
+//字符
+char* newstr[]={">_<","⊙﹏⊙","^_^","-_-","..@_@..","(0_0;)","o_0","O__O","o_O???","一 一+","(*>﹏<*)","('')Y","(~_~)/"};
+char* oldstr[]={"#01","#02","#03","#04","#05","#06","#07","#08","#09","#10","#11","#66","88"};
 /************一套输入指令:
 *************logout : 登出当前账号
 *************login ：在LOGOUT状态下登陆账号
@@ -158,7 +161,7 @@ int logout_res(xmlDocPtr doc, xmlNodePtr cur);
 int list_res(xmlDocPtr doc, xmlNodePtr cur);
 int file_send_to(xmlDocPtr doc, xmlNodePtr cur);
 int file_recv_from(xmlDocPtr doc, xmlNodePtr cur);
-
+int face(char *str,char*oldstr,char*newstr,char*buf);//表情函数；
 void *client_file_recv(void *);
 void *client_file_send(void *);
 void *client_alive(void *);   //线程函数，用于定时向服务器发送信息
@@ -226,7 +229,7 @@ int main(void)
 	pthread_t tid_alive;
 	pthread_create(&tid_alive,NULL,client_alive,NULL);
 	pthread_detach(tid_alive);
-   
+	
     fds[0].fd = 0;
     fds[0].events = POLLIN;
     fds[1].fd = sockfd;
@@ -239,7 +242,7 @@ int main(void)
         if(fds[0].revents & POLLIN)
         {
 			if(user_status != U_ST_LOGOUT && user_status != U_ST_LOGING)
-			{
+				{
 				fgets(stdinbuf,sizeof(stdinbuf),stdin);
 				stdinbuf[strlen(stdinbuf)-1] = '\0';
 				if(strncmp(stdinbuf,"logout",strlen("logout")) ==0)
@@ -330,6 +333,7 @@ int main(void)
 			{
 				printf("connect is broken!\n");
 				user_status = U_ST_LOGOUT;
+				continue;
 			}
             recvbuf[recvlen] = 0;
             doc = xmlParseMemory((const char *)recvbuf, strlen((char *)recvbuf)+1);  
@@ -555,7 +559,17 @@ int recv_message(xmlDocPtr doc, xmlNodePtr cur)
 		free(fromuser);
 		return -1;
 	}
-	printf("%s : %s\n",fromuser,contex);               //获取收到的信息
+	char buf[1024]={0};//字符
+	char str[1024]={0};
+	strcpy(str,(char*)contex);
+	
+	int count;
+	for(count = 0;count<COUNTOF(oldstr);count++)
+	{
+		face(str,oldstr[count],newstr[count],buf);
+		strcpy(str,buf);
+	}
+	printf("%s : %s\n",fromuser,str);               //获取收到的信息
 	send(sockfd, "received", strlen("received"), 0);
 	free(contex);
 	free(fromuser);
@@ -590,7 +604,7 @@ int send_res(xmlDocPtr doc, xmlNodePtr cur)
 	if(error == NULL)
 		return -1;
 	if(strcmp((char *)error,"success"))
-		printf("%s\n",error);
+	printf("%s\n",error);
 	free(error);
 	return 0;
 }
@@ -801,7 +815,7 @@ void *client_file_recv(void *arg)
 	pFileTransmit->status = TRA_ST_RUN;
 	
 
-	
+
 	sprintf(sendbuf,FILE_RECV,username,pFileTransmit->sendname,"127.0.0.1","11111");
 	
 	send(sockfd,sendbuf,strlen(sendbuf),0);
@@ -818,7 +832,7 @@ void *client_file_recv(void *arg)
 	select(connectid+1,&readset,NULL,NULL,&tv);
 	 
 	recv(connectid,pFileTransmit->filename,sizeof(pFileTransmit->filename ),0);
-	printf("%s\n",pFileTransmit->filename); //调试信息
+	printf("%s\n",pFileTransmit->filename); //调试信息	
 	int filefd = open(pFileTransmit->filename,O_RDWR|O_CREAT,0777);
 	if(filefd < 0)
 	{
@@ -884,7 +898,7 @@ void *client_file_send(void *arg)
 		close(sockid_sendfile);
 		pthread_exit((void *)1);
 	}
-	
+
 	pFileTransmit->status = TRA_ST_RUN;
 	while(1)
 	{
@@ -911,11 +925,34 @@ void *client_file_send(void *arg)
 	}
 	printf("file send over\n");
 	//send(sockid_sendfile,"file send over",strlen("file send over"),0);
-	
+
 	bzero(pFileTransmit,sizeof(struct file_transmit));
 	pFileTransmit->status = TRA_ST_REST;
 	free(arg);
 	close(filefd);
 	close(sockid_sendfile);
 	pthread_exit((void *)0);
+}
+//字符
+int face(char *str,char*oldstr,char*newstr,char*buf)
+{
+	char* p;
+	if((str==NULL)||(oldstr==NULL)||(newstr==NULL)||(buf==NULL))
+		return -1;
+	while(1)
+	{
+		p = strstr(str,oldstr);
+		if(p == NULL)
+		{
+			strcpy(buf,str);
+			break;
+		}
+		bzero(buf,strlen(buf));
+		strncpy(buf,str,p-str);
+		strcat(buf,newstr);
+		p += strlen(oldstr);
+		strcat(buf,p);
+		strcpy(str,buf);	
+	}
+	return 0;
 }
