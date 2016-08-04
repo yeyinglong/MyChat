@@ -136,6 +136,15 @@ const char GROUP_MSG[]={    //group发生信息-
 	"<Context><![CDATA[%s]]></Context>"
 	"</xml>"
 };
+
+const char GROUP_LIST[]={    //group在线人员
+	"<xml>"
+	"<FromUser>%s</FromUser>"
+    "<CMD>GroupList</CMD>"
+    "<GROUP>%s</GROUP>"
+	"</xml>"
+};
+
 const char ALIVE_MSG[]={
 	"<xml>"
 	"<FromUser>%s</FromUser>"
@@ -377,6 +386,11 @@ int main(void)
 					// fgets(filename,sizeof(filename),stdin);
 					// filename[strlen(filename)-1] = '\0';
 					sprintf(sendbuf,FILE_SEND,pFileTransmit->sendname,pFileTransmit->recvname);
+					send(sockfd,sendbuf,strlen(sendbuf),0);
+				}
+				else if(strncmp(stdinbuf,"group list",strlen("group list")==0 && user_status == U_ST_GCHAT)
+				{
+					sprintf(sendbuf,GROUP_LIST,username,friendname);
 					send(sockfd,sendbuf,strlen(sendbuf),0);
 				}
 				else if(user_status == U_ST_CHAT)//chat发送-

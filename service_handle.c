@@ -60,6 +60,13 @@ const char LIST_RES[]={
 	"</xml>"
 };
 
+const char GROUP_LIST_RES[]={
+	"<xml>"
+	"<CMD>GroupList</CMD>"
+	"<User>%s</User>"
+	"</xml>"
+};
+
 const char ALIVE_RES[]={
 	"<xml>"
 	"<CMD>Alive</CMD>"
@@ -602,6 +609,46 @@ user_groupmsg_free:
 	return 0;
 }
 
+int user_grouplist(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
+{
+	cur = cur->next;
+	xmlChar *group = xmlGetNodeText(doc, cur, "GROUP");
+	if(group == NULL)
+		return 0;
+		sprintf(sqlcmd, "select * from %s", group);
+	mysql_query_my(conn, sqlcmd);
+    MYSQL_RES *res = mysql_store_result(conn);
+	if(res == NULL) 
+	{
+		xmlFree(group);
+		return 0;
+	}
+	MYSQL_ROW row;
+	while((row = mysql_fetch_row(res)) != NULL)
+	{
+		struct list_head *pos;
+		if(strcmp(row[0], (char*)fromUser) == 0)
+			continue;
+		list_for_each(pos, &head) 
+		{
+			pcht = list_entry(pos, Chater, entry);
+			if(strcmp(pcht->userName, row[0]) == 0)
+			{
+				sprintf(sendbuf, GROUP_LIST_RES, pcht->userName);
+				if(send(pclt->fd, sendbuf, strlen(sendbuf), 0) < 0)
+				{
+					LOG_ERR("%s:%d send",__func__,__LINE__);
+				}
+				if(recv(pclt->fd, recvbuf, RECV_BUF_SIZE, 0) < 0)
+				{
+					LOG_ERR("%s:%d recv",__func__,__LINE__);
+				}
+			}
+		}
+	}
+	xmlFree(group);
+	return 0;
+}
 
 int ss_err(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 {
@@ -724,6 +771,7 @@ chat_handle_t chat_handle_table[] = {
 	{"FileSendError", user_FileSendErro},
 	{"FileRecvError", user_FileRecvErro},
 	{"groupmsg", user_groupmsg},
+	{"GroupList", user_grouplist},
 };
 chat_handle_t ss_handle_table[] = {
 	{"Login", user_login},
