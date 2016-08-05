@@ -957,7 +957,7 @@ int startup_handler(void)
 	char value = 1;
 	mysql_options(conn, MYSQL_OPT_RECONNECT, (char *)&value);
     //连接数据库
-    if (!mysql_real_connect(conn, "yeyl.site", "root", "201qyzx201", "MyChat", 0, NULL, 0)) 
+    if (!mysql_real_connect(conn, "yeyl.site", "yeyl", "123456", "MyChat", 0, NULL, 0)) 
     {
 		LOG_ERR_MYSQL(conn);
     }
