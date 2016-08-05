@@ -84,6 +84,9 @@ char* oldstr[]={"#01","#02","#03","#04","#05","#06","#07","#08","#09","#10","#11
 *************create %s : 创建一个组
 *************delete %s : 创建者可以摧毁一个组
 *************show group :　显示该用户已加入的组
+*************show record : 显示用户所有的聊天记录
+*************clean record : 清理用户所有聊天记录，只清楚自己发送的
+*************show grouprecord %s : 显示指定组的所有聊天记录，自己必须在这个组中
 *************/
 
 
@@ -202,6 +205,9 @@ void *client_file_send(void *);
 void *client_alive(void *);   //线程函数，用于定时向服务器发送信息
 int load_user();     //用于登陆账号
 int regist_user();   //注册账号
+int show_record(void);
+int clean_record(void );
+int showgrouprecord();
 
 int geteth0ip(char *);
 
@@ -305,9 +311,62 @@ int main(int argc, char *argv[])   //指定服务器ip地址
 					sprintf(sendbuf,REQLIST,username);
 					send(sockfd,sendbuf,strlen(sendbuf),0);
 				}
+				// else if(strncmp(stdinbuf,"show grouprecord",strlen("show grouprecord")) == 0)
+				// {	
+					// strtok(stdinbuf," ");
+					// strtok(stdinbuf," ");
+					// char *str;
+					// if((str = strtok(NULL," ")) == NULL)
+					// {
+						// printf("please input the group you want to show record!\n");
+					// }
+					// else
+					// {
+						// bzero(groupname,sizeof(groupname));
+						// strcpy(groupname,str);
+						// sprintf(sqlcmd,"select groupname from chatgroup where groupname='%s'",groupname);
+						// mysql_query_my(conn,sqlcmd);
+						// MYSQL_RES *res = mysql_store_result(conn);
+						// if(res==NULL)
+						// {
+							// printf("select * from error!\n");
+							// continue;
+						// }
+						// MYSQL_ROW row;
+						// row = mysql_fetch_row(res);
+						// if(row == NULL)	
+						// {
+							// printf("no such group\n");	
+							// continue;
+						// }
+						// else
+						// {
+							// sprintf(sqlcmd, "select user from %s where user='%s'", (char*) row[0],username);
+							// mysql_query_my(conn, sqlcmd);
+							// MYSQL_RES * grpres = mysql_store_result(conn);
+							// MYSQL_ROW grprow = mysql_fetch_row(grpres);
+							// if(grprow == NULL)
+							// {
+								// printf("you not in this group");
+								// continue;
+							// }
+							// showgrouprecord();
+						// }	
+						// bzero(groupname,sizeof(groupname));
+					// }
+				// }
+	
 				else if(strncmp(stdinbuf,"show group",strlen("show group")) == 0)// 发送show group 命令；
 				{
 					showgroup();
+				}
+				else if(strncmp(stdinbuf,"show record",strlen("show record")) == 0)// 发送show record 命令；
+				{
+					show_record();
+				}
+				else if(strncmp(stdinbuf,"clean record",strlen("clean record")) == 0)
+				{
+					clean_record();
 				}
 				else if(strncmp(stdinbuf,"join",strlen("join")) == 0) //join group
 				{
@@ -389,13 +448,14 @@ int main(int argc, char *argv[])   //指定服务器ip地址
 						if(res==NULL)
 						{
 							printf("select * from error!\n");
-							exit(1);
+							continue;
 						}
 						MYSQL_ROW row;
 						row = mysql_fetch_row(res);
 						if(row == NULL)	
 						{
 							printf("no such group\n");	
+							continue;
 						}
 						else
 						{
@@ -416,6 +476,7 @@ int main(int argc, char *argv[])   //指定服务器ip地址
 						
 					}
 				}
+				
 				else if(strncmp(stdinbuf,"chat",strlen("chat")) == 0) //chat name
 				{
 					strtok(stdinbuf," ");
@@ -453,11 +514,23 @@ int main(int argc, char *argv[])   //指定服务器ip地址
 				}
 				else if(user_status == U_ST_CHAT)//chat发送-
 				{
+					bzero(sqlcmd,sizeof(sqlcmd));
+					sprintf(sqlcmd,"insert into chatrecord values('%s','%s','%s')",username,friendname,stdinbuf);
+					if(mysql_query_my(conn,sqlcmd) <0)
+					{
+						printf("record error!\n");
+					}
 					sprintf(sendbuf,SEND_MSG,username,friendname,stdinbuf);
 					send(sockfd,sendbuf,strlen(sendbuf),0);
 				}
 				else if(user_status == U_ST_GCHAT)//chatgroup发送-
 				{
+					bzero(sqlcmd,sizeof(sqlcmd));
+					sprintf(sqlcmd,"insert into chatrecord values('%s','%s','%s')",username,friendname,stdinbuf);
+					if(mysql_query_my(conn,sqlcmd) <0)
+					{
+						printf("record error!\n");
+					}
 					sprintf(sendbuf,GROUP_MSG,username,friendname,stdinbuf);
 					send(sockfd,sendbuf,strlen(sendbuf),0);
 				}
@@ -547,6 +620,30 @@ int main(int argc, char *argv[])   //指定服务器ip地址
 	exit(0);
 }
 
+int showgrouprecord(void)
+{
+	sprintf(sqlcmd,"select * from chatrecord where fname='%s' or tname='%s'",groupname,groupname);//打印chatrecord的表
+	mysql_query_my(conn,sqlcmd);
+	MYSQL_RES *res = mysql_store_result(conn);
+	 if(res==NULL)
+	{
+		printf("no record!\n");
+		return -1;
+	}
+	MYSQL_ROW row;
+	while((row = mysql_fetch_row(res))!= NULL)//一行行读取表的内容
+	{
+		// sprintf(sqlcmd, "select user from %s where user='%s'", (char*) row[0],username);
+		// mysql_query_my(conn, sqlcmd);
+		// MYSQL_RES * groupres = mysql_store_result(conn);
+		// MYSQL_ROW rowgroup= mysql_fetch_row(groupres);
+		// if(rowgroup == NULL)
+			// continue;
+		printf("%s >> %s : %s\n",(char* )row[0],(char *)row[1],(char *)row[2]);
+	}
+	return 0;
+}
+
 int showgroup()
 {
 	sprintf(sqlcmd,"select * from chatgroup");//打印chatgroup的表
@@ -554,8 +651,8 @@ int showgroup()
 	MYSQL_RES *res = mysql_store_result(conn);
 	 if(res==NULL)
 	{
-		printf("select * from error!\n");
-		exit(1);
+		printf("no group!\n");
+		return -1;
 	}
 	MYSQL_ROW row;
 	while((row = mysql_fetch_row(res))!= NULL)//一行行读取表的内容
@@ -754,6 +851,38 @@ int load_user()
 	return 0;
 }
 
+int show_record(void)
+{
+	sprintf(sqlcmd,"select * from chatrecord where fname='%s' or tname='%s'",username,username);//打印chatrecord的表
+	mysql_query_my(conn,sqlcmd);
+	MYSQL_RES *res = mysql_store_result(conn);
+	 if(res==NULL)
+	{
+		printf("no record!\n");
+		return -1;
+	}
+	MYSQL_ROW row;
+	while((row = mysql_fetch_row(res))!= NULL)//一行行读取表的内容
+	{
+		// sprintf(sqlcmd, "select user from %s where user='%s'", (char*) row[0],username);
+		// mysql_query_my(conn, sqlcmd);
+		// MYSQL_RES * groupres = mysql_store_result(conn);
+		// MYSQL_ROW rowgroup= mysql_fetch_row(groupres);
+		// if(rowgroup == NULL)
+			// continue;
+		printf("%s >> %s : %s\n",(char* )row[0],(char *)row[1],(char *)row[2]);
+	}
+	return 0;
+	
+}
+
+int clean_record(void)
+{
+	sprintf(sqlcmd,"delete from chatrecord where fname='%s'",username);//打印chatrecord的表
+	mysql_query_my(conn,sqlcmd);
+	return 0;
+} 
+
 int regist_user()
 {
 	char regist_username[32] = {0}; 
@@ -902,6 +1031,12 @@ int recv_message(xmlDocPtr doc, xmlNodePtr cur)
 		strcpy(str,buf);
 	}
 	printf("%s : %s\n",fromuser,str);               //获取收到的信息
+	//bzero(sqlcmd,sizeof(sqlcmd));
+	// sprintf(sqlcmd,"insert into chatrecord values('%s','%s','%s')",username,(char *)fromuser,stdinbuf);
+	// if(mysql_query_my(conn,sqlcmd) <0)
+	// {
+		// printf("record error!\n");
+	// }
 	send(sockfd, "received", strlen("received"), 0);
 	free(contex);
 	free(fromuser);
@@ -1360,7 +1495,7 @@ int geteth0ip(char *eth0_ip)               //获取本地eth0
 	}
 
 	memset(&ifr_ip, 0, sizeof(ifr_ip));
-	strncpy(ifr_ip.ifr_name, "eth0", sizeof(ifr_ip.ifr_name) - 1);
+	strncpy(ifr_ip.ifr_name, "ens33", sizeof(ifr_ip.ifr_name) - 1);
 
 	ret = ioctl(sockfd_geteth0, SIOCGIFADDR, &ifr_ip);
 	if(ret < 0)

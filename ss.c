@@ -85,14 +85,25 @@ xml_handler_t xml_handler_table[] = {
 	{"KILL",cmd_res},
 };
 
-int main(void)
+int main(int argc, char *argv[])
 {
 	//建立连接；
 	struct hostent *host;
-	if((host = gethostbyname("localhost"))==NULL)
+	if(argc < 2 )
 	{
-		perror("gethostbyname");
-		exit(1);
+		if((host = gethostbyname("localhost"))==NULL)
+		{
+			perror("gethostbyname");
+			exit(1);
+		}
+	}
+	else
+	{
+		if((host = gethostbyname(argv[1]))==NULL)
+		{
+			perror(argv[1]);
+			exit(1);
+		}
 	}
 	startup_handler();
 	if((sockfd=socket(AF_INET,SOCK_STREAM,0))==-1)
