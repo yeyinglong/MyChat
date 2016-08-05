@@ -14,7 +14,8 @@
 #include "log.h"
 #include "service.h"
 
-int LOG_FLAG = 4;
+int LOG_FLAG = 4;        /*日志输出级别*/
+
 const char SEND_TEXT[]={
 	"<xml>"
 	"<CMD>msg</CMD>"
@@ -122,30 +123,36 @@ const char SS_RES[]={
 	"<ERROR>%s</ERROR>"
 	"</xml>"
 };
-#define COUNTOF(x) (sizeof(x)/sizeof((x)[0]))
-#define SEND_BUF_SIZE 1024
-#define RECV_BUF_SIZE 1024
-static char sendbuf[SEND_BUF_SIZE];
-static char recvbuf[SEND_BUF_SIZE];
-char sqlcmd[SEND_BUF_SIZE];
-MYSQL *conn;       //数据库
 
+/*聊天客户端结构体*/
 typedef struct {
 	struct list_head entry;
-	pClient pclt;
-	char *userName;
+	pClient pclt;            /*socket客户端信息*/
+	char *userName;          /*用户名*/
 }Chater, *pChater;
+/*释放聊天客户端*/
+#define CHATER_FREE(pcht) {free(pcht->userName);free(pcht);pcht=NULL;}
 
+#define COUNTOF(x) (sizeof(x)/sizeof((x)[0]))
+
+#define SEND_BUF_SIZE 1024
+#define RECV_BUF_SIZE 1024
+static char sendbuf[SEND_BUF_SIZE]; /*socket 发送缓冲区*/
+static char recvbuf[SEND_BUF_SIZE]; /*socket 接收缓冲区*/
+
+char sqlcmd[SEND_BUF_SIZE]; /*数据库命令*/
+MYSQL *conn;                /*数据库*/
 static pChater pcht = NULL;
-static LIST_HEAD(head);        //定义链表头
+static LIST_HEAD(head);     /*定义链表头*/
 
 /*服务器启动时调用函数*/
 int startup_handler(void)
 {
 	conn = mysql_init(NULL);
+	/*设置数据库长连接*/
 	char value = 1;
 	mysql_options(conn, MYSQL_OPT_RECONNECT, (char *)&value);
-    //连接数据库
+    /*连接数据库*/
     if (!mysql_real_connect(conn, "yeyl.site", "yeyl", "123456", "MyChat", 0, NULL, 0)) 
     {
 		LOG_ERR_MYSQL(conn);
@@ -163,7 +170,7 @@ int accept_handler(pClient pclt)
 int close_handler(pClient pclt)
 {
 	struct list_head *pos, *tmpos;
-	list_for_each_safe(pos, tmpos, &head)    //查询设备是否已经连接
+	list_for_each_safe(pos, tmpos, &head)    /*若用户已经登录则让用户下线*/
 	{
 		pcht = list_entry(pos, Chater, entry);
 		if(pcht->pclt == pclt)
@@ -174,15 +181,14 @@ int close_handler(pClient pclt)
 				LOG_ERR("%s:%d send",__func__,__LINE__);
 			}
 			list_del(pos);
-			free(pos);
-			pos = NULL;
+			CHATER_FREE(pcht);
 			break;
 		}
 	}
 	return 0;
 }
 
-//关闭服务器
+/*关闭服务器*/
 int close_service(pClient pclt, xmlDocPtr doc, xmlNodePtr cur)
 {
 	if (xmlStrcmp(cur->name, (const xmlChar *)"close") == 0)
@@ -199,9 +205,10 @@ int close_service(pClient pclt, xmlDocPtr doc, xmlNodePtr cur)
 	}
 }
 
+/*数据库命令*/
 int mysql_query_my(MYSQL *conn, const char *str)
 {
-	mysql_ping(conn);
+	mysql_ping(conn); /*检测数据库连接*/
 	int ret = mysql_query(conn, str);
 	if(ret)
 	{
@@ -211,7 +218,7 @@ int mysql_query_my(MYSQL *conn, const char *str)
 }
 
 
-//从当前节点获取内容，获取成功返回内容指针
+/*从当前节点获取内容，获取成功返回内容指针*/
 xmlChar* xmlGetNodeText(xmlDocPtr doc, xmlNodePtr cur, const char *name)
 {
 	xmlChar* text = NULL;
@@ -238,6 +245,7 @@ xmlChar* xmlGetNodeText(xmlDocPtr doc, xmlNodePtr cur, const char *name)
 	return NULL;
 }
 
+/*聊天消息转发*/
 int transmit_msg(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 {
 	char res[16] = "success";
@@ -255,7 +263,7 @@ int transmit_msg(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 	}
 
 	struct list_head *pos;
-	list_for_each(pos, &head)    //查询设备是否已经连接
+	list_for_each(pos, &head)  
 	{
 		pcht = list_entry(pos, Chater, entry);
 		if(strcmp(pcht->userName, (const char*)toUser) == 0)
@@ -288,11 +296,12 @@ int transmit_msg(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 	return 0;
 }
 
+/*用户登录*/
 int user_login(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 {
 	LOG_INFO("%s try login", fromUser);
 	struct list_head *pos;
-	list_for_each(pos, &head)    //查询设备是否已经连接
+	list_for_each(pos, &head)  
 	{
 		pcht = list_entry(pos, Chater, entry);
 		if(strcmp(pcht->userName, (const char*)fromUser) == 0)
@@ -324,18 +333,18 @@ int user_login(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 	return 0;
 }
 
+/*用户注销登录*/
 int user_logout(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 {
 	char res[16] = "success";
 	struct list_head *pos, *tmpos;
-	list_for_each_safe(pos, tmpos, &head)    //查询设备是否已经连接
+	list_for_each_safe(pos, tmpos, &head) 
 	{
 		pcht = list_entry(pos, Chater, entry);
 		if(strcmp(pcht->userName, (const char*)fromUser) == 0)
 		{
-			list_del(pos);
-			free(pcht);
-			pcht = NULL;
+			list_del(pos);   /*将节点从链表中移除*/
+			CHATER_FREE(pcht);	     /**/
 			break;
 		}
 	}
@@ -351,48 +360,12 @@ int user_logout(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 	return 0;
 }
 
-/*通过ss程序让用户下线*/
-int ss_QUITUSER(pClient pclt,xmlDocPtr doc,xmlNodePtr cur,xmlChar*fromss)
-{
-	char res[16] = "success";
-	cur = cur->next;
-	xmlChar *toUser = xmlGetNodeText(doc, cur, "ToUser");
-	if(toUser == NULL)
-		return 0;
-	LOG_INFO("ss try to kill %s", toUser);
-	struct list_head*pos,*tmpos;
-	list_for_each_safe(pos,tmpos,&head)
-	{
-		pcht=list_entry(pos,Chater,entry);
-		if(strcmp(pcht->userName,(const char*)toUser)==0)
-		{
-			list_del(pos);
-			free(pcht);
-			LOG_INFO("ss:%s Logout", toUser);
-			pcht=NULL;
-			break;
-		}	
-	}	
-	if(pos==&head)
-	{
-		LOG_DBG("ss:%s NotLogin", toUser);
-		strcpy(res,"NotLogin");
-	}
-	sprintf(sendbuf,LOGOUT_RES,res);
-	if(send(pclt->fd,sendbuf,strlen(sendbuf),0))
-	{
-		LOG_ERR("%s:%d send",__func__,__LINE__);
-	}
-	xmlFree(toUser);
-	return 0;
-}
-
-
+/*获取用户列表*/
 int user_ReqList(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 {
-	struct list_head *pos, *tmpos;
+	struct list_head *pos;
 	LOG_INFO("FromUser:%s replist", fromUser);
-	list_for_each_safe(pos, tmpos, &head)    //查询设备是否已经连接
+	list_for_each(pos, &head)  
 	{
 		pcht = list_entry(pos, Chater, entry);
 		if(strcmp(pcht->userName, (const char*)fromUser) == 0)
@@ -410,6 +383,7 @@ int user_ReqList(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 	return 0;
 }
 
+/*保活数据处理*/
 int user_Alive(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 {
 	// LOG_INFO("%s Alive", fromUser);
@@ -563,6 +537,7 @@ int user_FileRecvErro(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *from
 	return 0;
 }
 
+/*讨论组消息发送*/
 int user_groupmsg(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 {
 	cur = cur->next;
@@ -609,6 +584,7 @@ user_groupmsg_free:
 	return 0;
 }
 
+/*讨论组信息转发*/
 int user_grouplist(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 {
 	cur = cur->next;
@@ -654,7 +630,6 @@ int user_grouplist(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUse
 int ss_err(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 {
 	LOG_FLAG = 1;
-	bzero(sendbuf,sizeof(sendbuf));
 	if(LOG_FLAG == 1)
 	{
 		sprintf(sendbuf,SS_RES,"ERR","success");
@@ -672,7 +647,6 @@ int ss_info(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 {
 	LOG_FLAG = 4;
 	LOG_INFO("info");
-	bzero(sendbuf,sizeof(sendbuf));
 	if(LOG_FLAG == 4)
 	{
 		sprintf(sendbuf,SS_RES,"INFO","success");
@@ -689,7 +663,6 @@ int ss_debug(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 {
 	LOG_FLAG = 3;
 	LOG_INFO("debug");
-	bzero(sendbuf,sizeof(sendbuf));
 	if(LOG_FLAG == 3)
 	{
 		sprintf(sendbuf,SS_RES,"DEBUG","success");
@@ -706,7 +679,6 @@ int ss_warning(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 {
 	LOG_FLAG = 2;
 	LOG_INFO("warning");
-	bzero(sendbuf,sizeof(sendbuf));
 	if(LOG_FLAG == 2)
 	{
 		sprintf(sendbuf,SS_RES,"WARNING","success");
@@ -728,7 +700,7 @@ int ss_kill(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 	if(toUser == NULL)
 		return 0;
 	struct list_head *pos;
-	list_for_each(pos, &head)    //查询设备是否已经连接
+	list_for_each(pos, &head) 
 	{
 		pcht = list_entry(pos, Chater, entry);
 		if(strcmp(pcht->userName, (const char*)toUser) == 0)
@@ -738,8 +710,8 @@ int ss_kill(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 			{
 				LOG_ERR("%s:%d send",__func__,__LINE__);
 			}
-			list_del(pos);			//从链表删除结点
-			free(pcht);	
+			list_del(pos);			/*从链表删除结点*/
+			CHATER_FREE(pcht);	
 			LOG_INFO("client %s bekilled", inet_ntoa(pclt->client_addr.sin_addr));
 			break;
 		}
