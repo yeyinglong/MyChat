@@ -34,6 +34,7 @@ char stdinbuf[128];
 char sqlcmd[BUFFER_SIZE];
 MYSQL *conn;       //数据库
 char username[32];
+char groupname[32];
 
 struct file_transmit{
 	int status;
@@ -107,27 +108,8 @@ const char REQLIST[]={
     "<CMD>ReqList</CMD>"
     "</xml>"
 };
-const char GROUPLIST[]={ //1发送 grouplist ， 查找服务器上的group 遍历group内的成员 对比fromuser如果有就返回group名字；
-    "<xml>"
-    "<FromUser>%s</FromUser>"
-    "<CMD>GROUPLIST</CMD>"
-    "</xml>"
-};
-const char GLOGIN_MSG[]={  //1加入Group 
-    "<xml>"
-    "<FromUser>%s</FromUser>"
-    "<CMD>GLogin</CMD>"
-	"<GROUP>%s</GROUP>"
-    "</xml>"
-};
 
-const char GLOGOUT_MSG[]={ //1离开group
-    "<xml>"
-    "<FromUser>%s</FromUser>"
-    "<CMD>GLogout</CMD>"
-	"<GROUP>%s</GROUP>"
-    "</xml>"
-};
+
 const char GROUP_MSG[]={    //group发生信息-
 	"<xml>"
 	"<FromUser>%s</FromUser>"
@@ -191,6 +173,11 @@ const char C_FILE_RECV_ERR[]={      //接收端出现异常时，发送给服务
 };
 
 
+int showgroup();
+int joingroup();
+int leavegroup();
+int creategroup();
+int deletegroup();
 int startup_handler(void);
 int mysql_query_my(MYSQL *conn, const char *str);
 int recv_message(xmlDocPtr, xmlNodePtr);
@@ -216,7 +203,8 @@ typedef struct{
 	pfun func;
 }xml_handler_t;
 
-xml_handler_t xml_handler_table[8] = {
+
+xml_handler_t xml_handler_table[] = {
 	{"msg",recv_message},
 	{"res",send_res},
 	{"Login",login_res},
@@ -224,10 +212,11 @@ xml_handler_t xml_handler_table[8] = {
 	{"ReqList",list_res},
 	{"FileSend",file_send_to},
 	{"FileRecv",file_recv_from},
-	{"groupmsg", recv_groupmsg}
+	{"groupmsg", recv_groupmsg},
+	{"GroupList", list_res}
 };
 
-int main(void)
+int main(int argc, char *argv[])
 {
 	pFileTransmit = (struct file_transmit *)malloc(sizeof(struct file_transmit));
     struct pollfd fds[2];
@@ -241,7 +230,10 @@ int main(void)
     
 	startup_handler();
 	
-	if((host = gethostbyname("localhost"))==NULL)
+	char hostname[32] = "localhost";
+	if(argc > 1)
+		strcpy(hostname, argv[1]);
+	if((host = gethostbyname(hostname))==NULL)
 	{
 		perror("gethostbyname");
 		exit(1);
@@ -299,8 +291,7 @@ int main(void)
 				}
 				else if(strncmp(stdinbuf,"show group",strlen("show group")) == 0)// 发送show group 命令；
 				{
-					sprintf(sendbuf,GROUPLIST,username);
-					send(sockfd,sendbuf,strlen(sendbuf),0);
+					showgroup();
 				}
 				else if(strncmp(stdinbuf,"join",strlen("join")) == 0) //join group
 				{
@@ -312,9 +303,8 @@ int main(void)
 					}
 					else
 					{
-						strcpy(friendname,str);
-						sprintf(sendbuf,GLOGIN_MSG,username,friendname);
-						send(sockfd,sendbuf,strlen(sendbuf), 0);
+						strcpy(groupname,str);
+						joingroup();
 					}
 				}
 				else if(strncmp(stdinbuf,"leave",strlen("leave")) == 0) //join group
@@ -327,9 +317,43 @@ int main(void)
 					}
 					else
 					{
-						strcpy(friendname,str);
-						sprintf(sendbuf,GLOGOUT_MSG,username,friendname);
-						send(sockfd,sendbuf,strlen(sendbuf),0);
+						strcpy(groupname,str);
+						leavegroup();
+						
+					}
+				}
+				else if(strncmp(stdinbuf,"create",strlen("create")) == 0) //join group
+				{
+					strtok(stdinbuf," ");
+					char *str;
+					if((str = strtok(NULL," ")) == NULL)
+					{
+						printf("please input the group name you want to leave!\n");
+					}
+					else
+					{
+						if(strcmp(str,"group"))
+						{
+							strcpy(groupname,str);
+							creategroup();
+						}
+						else
+							printf("cannot create group!!\n");	
+					}
+				}
+				else if(strncmp(stdinbuf,"delete",strlen("delete")) == 0) //join group
+				{
+					strtok(stdinbuf," ");
+					char *str;
+					if((str = strtok(NULL," ")) == NULL)
+					{
+						printf("please input the group name you want to delete!\n");
+					}
+					else
+					{
+						strcpy(groupname,str);
+						deletegroup();
+						
 					}
 				}
 				else if(strncmp(stdinbuf,"chatgroup",strlen("chatgroup")) == 0) //chatgroup name
@@ -342,20 +366,8 @@ int main(void)
 					}
 					else
 					{
-						sprintf(sqlcmd,"select user from %s where user='%s'", str, username);
-						mysql_query_my(conn, sqlcmd);
-						MYSQL_RES *res = mysql_store_result(conn);
-						if(res != NULL) 
-						{
-							MYSQL_ROW row = mysql_fetch_row(res);
-							if(row != NULL)
-							{
-								strcpy(friendname,str);
-								user_status = U_ST_GCHAT;
-							}
-						}
-						if(user_status != U_ST_GCHAT)
-							printf("group not exist\n");
+						strcpy(friendname,str);
+						user_status = U_ST_GCHAT;
 					}
 				}
 				else if(strncmp(stdinbuf,"chat",strlen("chat")) == 0) //chat name
@@ -388,7 +400,7 @@ int main(void)
 					sprintf(sendbuf,FILE_SEND,pFileTransmit->sendname,pFileTransmit->recvname);
 					send(sockfd,sendbuf,strlen(sendbuf),0);
 				}
-				else if(strncmp(stdinbuf,"group list",strlen("group list")==0 && user_status == U_ST_GCHAT)
+				else if(strncmp(stdinbuf,"group list",strlen("group list"))==0 && user_status == U_ST_GCHAT)
 				{
 					sprintf(sendbuf,GROUP_LIST,username,friendname);
 					send(sockfd,sendbuf,strlen(sendbuf),0);
@@ -489,6 +501,167 @@ int main(void)
 	exit(0);
 }
 
+int showgroup()
+{
+	sprintf(sqlcmd,"select * from chatgroup");//打印chatgroup的表
+	mysql_query_my(conn,sqlcmd);
+	MYSQL_RES *res = mysql_store_result(conn);
+	 if(res==NULL)
+	{
+		printf("select * from error!\n");
+		exit(1);
+	}
+	MYSQL_ROW row;
+	while((row = mysql_fetch_row(res))!= NULL)//一行行读取表的内容
+	{
+		sprintf(sqlcmd, "select user from %s where user='%s'", (char*) row[0],username);
+		mysql_query_my(conn, sqlcmd);
+		MYSQL_RES * groupres = mysql_store_result(conn);
+		//MYSQL_RES *result = mysql_store_result(conn);
+		MYSQL_ROW rowgroup= mysql_fetch_row(groupres);
+		if(rowgroup == NULL)
+			continue;
+		printf("%s\n",(char* )row[0]);
+	}
+	return 0;
+	
+}
+
+int joingroup()
+{
+	sprintf(sqlcmd,"select groupname from chatgroup where groupname='%s'",groupname);
+	mysql_query_my(conn,sqlcmd);
+	MYSQL_RES *res = mysql_store_result(conn);
+	if(res==NULL)
+	{
+		printf("select  error!\n");
+		exit(1);
+	}
+	MYSQL_ROW row = mysql_fetch_row(res);
+	if(row == NULL)
+	{
+		printf("no such group \n");
+		return 0;
+	}
+	else
+	{
+		sprintf(sqlcmd, "select user from %s where user='%s'", (char*) row[0],username);
+		mysql_query_my(conn, sqlcmd);
+		MYSQL_RES *grpres = mysql_store_result(conn);
+		MYSQL_ROW grprow = mysql_fetch_row(grpres);
+		if(grprow ==NULL )//自己不在组里-
+		{
+			sprintf(sqlcmd,"insert into %s (user) values ('%s')",(char *)row[0],username);
+			mysql_query_my(conn,sqlcmd);
+			mysql_store_result(conn);
+			printf("success\n");
+			return 0;
+		}
+		else
+		{
+			printf("you have already in this group\n");
+		}
+	}
+	return 0;
+}
+int leavegroup()
+{
+	sprintf(sqlcmd,"select groupname from chatgroup where groupname='%s'",groupname);
+	mysql_query_my(conn,sqlcmd);
+	MYSQL_RES *res = mysql_store_result(conn);
+	if(res==NULL)
+	{
+		printf("select * from error!\n");
+		exit(1);
+	}
+	MYSQL_ROW row;
+	row = mysql_fetch_row(res);
+	if(row == NULL)	
+	{
+		printf("no such group\n");	
+	}
+	else
+	{
+		sprintf(sqlcmd, "select user from %s where user='%s'", (char*) row[0],username);
+		mysql_query_my(conn, sqlcmd);
+		MYSQL_RES * grpres = mysql_store_result(conn);
+		MYSQL_ROW grprow = mysql_fetch_row(grpres);
+		if(grprow == NULL)
+		{
+			printf("you not in this group");
+		}
+		else
+		{
+			sprintf(sqlcmd,"delete from %s where user='%s'",(char *)row[0],username);
+			mysql_query_my(conn,sqlcmd);
+			printf("delete success\n");
+			return 0;
+		}
+	}	
+	return 0;
+}
+int creategroup()
+{
+	sprintf(sqlcmd,"select groupname from chatgroup where groupname='%s'",groupname);
+	mysql_query_my(conn,sqlcmd);
+	MYSQL_RES *res = mysql_store_result(conn);
+	if(res==NULL)
+	{
+		printf("select error!\n");
+		exit(1);
+	}
+	MYSQL_ROW row;
+	row = mysql_fetch_row(res);
+	if(row == NULL)
+	{
+		sprintf(sqlcmd, "insert into chatgroup (groupname) value ('%s') ", groupname);
+		mysql_query_my(conn, sqlcmd);
+		sprintf(sqlcmd, "create table %s(user varchar(20))", groupname);//创建表
+		mysql_query_my(conn, sqlcmd);
+		printf("create success\n");
+		joingroup();
+	}
+	else
+	{
+		printf("this group alread exist\n");
+	}
+	return 0;
+}
+int deletegroup()
+{
+	sprintf(sqlcmd,"select groupname from chatgroup where groupname='%s'",groupname);
+	mysql_query_my(conn,sqlcmd);
+	MYSQL_RES *res = mysql_store_result(conn);
+	if(res==NULL)
+	{
+		printf("select error!\n");
+		exit(1);
+	}
+	MYSQL_ROW row;
+	row = mysql_fetch_row(res);
+	if(row == NULL)
+	{
+		printf("no such table\n");
+	}
+	else
+	{
+		sprintf(sqlcmd,"select * from %s",groupname);
+		mysql_query_my(conn,sqlcmd);
+		MYSQL_RES *grpres = mysql_store_result(conn);
+		MYSQL_ROW grprow = mysql_fetch_row(grpres);
+		if(strcmp((char *)grprow[0],username))
+		{
+			printf("you over your right\n");
+			return 0;
+		}
+		sprintf(sqlcmd, "delete from chatgroup where groupname=('%s') ", groupname);
+		mysql_query_my(conn, sqlcmd);
+		sprintf(sqlcmd, "drop table %s", groupname);//创建表
+		mysql_query_my(conn, sqlcmd);
+		printf("deldete success\n");
+	}
+	return 0;
+}
 int load_user()
 {	
 	char passwd[32];
@@ -790,7 +963,7 @@ int recv_groupmsg(xmlDocPtr doc, xmlNodePtr cur)
 
 int file_send_to(xmlDocPtr doc, xmlNodePtr cur)
 {
-	printf("recv filesend\n");
+	//printf("recv filesend\n");
 	bzero(sendbuf,sizeof(sendbuf));
 	xmlChar *userfrom;
 	xmlChar *error;

@@ -615,7 +615,7 @@ int user_grouplist(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUse
 	xmlChar *group = xmlGetNodeText(doc, cur, "GROUP");
 	if(group == NULL)
 		return 0;
-		sprintf(sqlcmd, "select * from %s", group);
+	sprintf(sqlcmd, "select * from %s", group);
 	mysql_query_my(conn, sqlcmd);
     MYSQL_RES *res = mysql_store_result(conn);
 	if(res == NULL) 
@@ -643,6 +643,7 @@ int user_grouplist(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUse
 				{
 					LOG_ERR("%s:%d recv",__func__,__LINE__);
 				}
+				break;
 			}
 		}
 	}
