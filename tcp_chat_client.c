@@ -14,6 +14,9 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+#include <sys/ioctl.h>
+#include <net/if.h>
+
 #include <libxml/parser.h>  
 #include <libxml/xmlmemory.h>
 #include <libxml/tree.h>
@@ -76,6 +79,11 @@ char* oldstr[]={"#01","#02","#03","#04","#05","#06","#07","#08","#09","#10","#11
 *************regist : 在LOGOUT状态下注册账号
 *************quit : 在LOGOUT状态退出程序
 *************send file : 在LOGIN或者CHAT状态下，进行发送文件的操作
+*************join %s : 加入一个指定的组
+*************leave %s ： 离开一个指定的组
+*************create %s : 创建一个组
+*************delete %s : 创建者可以摧毁一个组
+*************show group :　显示该用户已加入的组
 *************/
 
 
@@ -195,6 +203,7 @@ void *client_alive(void *);   //线程函数，用于定时向服务器发送信
 int load_user();     //用于登陆账号
 int regist_user();   //注册账号
 
+int geteth0ip(char *);
 
 typedef int (*pfun)(xmlDocPtr,xmlNodePtr);
 
@@ -216,7 +225,7 @@ xml_handler_t xml_handler_table[] = {
 	{"GroupList", list_res}
 };
 
-int main(int argc, char *argv[])
+int main(int argc, char *argv[])   //指定服务器ip地址
 {
 	pFileTransmit = (struct file_transmit *)malloc(sizeof(struct file_transmit));
     struct pollfd fds[2];
@@ -230,15 +239,22 @@ int main(int argc, char *argv[])
     
 	startup_handler();
 	
-	char hostname[32] = "localhost";
-	if(argc > 1)
-		strcpy(hostname, argv[1]);
-	if((host = gethostbyname(hostname))==NULL)
+	if(argc < 2 )
 	{
-		perror("gethostbyname");
-		exit(1);
+		if((host = gethostbyname("localhost"))==NULL)
+		{
+			perror("gethostbyname");
+			exit(1);
+		}
 	}
-	
+	else
+	{
+		if((host = gethostbyname(argv[1]))==NULL)
+		{
+			perror(argv[1]);
+			exit(1);
+		}
+	}
 	/*创建socket*/
 	if((sockfd=socket(AF_INET,SOCK_STREAM,0))==-1)
 	{
@@ -267,7 +283,7 @@ int main(int argc, char *argv[])
     fds[0].events = POLLIN;
     fds[1].fd = sockfd;
     fds[1].events = POLLRDNORM;
-	printf("input login to login again ,regist to register a new account or quit to exit\n");
+	printf("input login to login,regist to register a new account or quit to exit\n");
 	while(1)
     {
 		bzero(sendbuf,sizeof(sendbuf));
@@ -366,8 +382,38 @@ int main(int argc, char *argv[])
 					}
 					else
 					{
-						strcpy(friendname,str);
-						user_status = U_ST_GCHAT;
+						strcpy(groupname,str);
+						sprintf(sqlcmd,"select groupname from chatgroup where groupname='%s'",groupname);
+						mysql_query_my(conn,sqlcmd);
+						MYSQL_RES *res = mysql_store_result(conn);
+						if(res==NULL)
+						{
+							printf("select * from error!\n");
+							exit(1);
+						}
+						MYSQL_ROW row;
+						row = mysql_fetch_row(res);
+						if(row == NULL)	
+						{
+							printf("no such group\n");	
+						}
+						else
+						{
+							sprintf(sqlcmd, "select user from %s where user='%s'", (char*) row[0],username);
+							mysql_query_my(conn, sqlcmd);
+							MYSQL_RES * grpres = mysql_store_result(conn);
+							MYSQL_ROW grprow = mysql_fetch_row(grpres);
+							if(grprow == NULL)
+							{
+								printf("you not in this group");
+							}
+							else
+							{
+								strcpy(friendname,str);
+								user_status = U_ST_GCHAT;
+							}
+						}	
+						
 					}
 				}
 				else if(strncmp(stdinbuf,"chat",strlen("chat")) == 0) //chat name
@@ -595,6 +641,7 @@ int leavegroup()
 			sprintf(sqlcmd,"delete from %s where user='%s'",(char *)row[0],username);
 			mysql_query_my(conn,sqlcmd);
 			printf("delete success\n");
+			user_status = U_ST_LOGIN;
 			return 0;
 		}
 	}	
@@ -651,7 +698,7 @@ int deletegroup()
 		MYSQL_ROW grprow = mysql_fetch_row(grpres);
 		if(strcmp((char *)grprow[0],username))
 		{
-			printf("you over your right\n");
+			printf("over your right\n");
 			return 0;
 		}
 		sprintf(sqlcmd, "delete from chatgroup where groupname=('%s') ", groupname);
@@ -1114,11 +1161,13 @@ void *client_file_recv(void *arg)
 	int on = 1;
 	setsockopt(sockid_recvfile, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
 	
+	char eth0_ip[INET_ADDRSTRLEN];
+	geteth0ip(eth0_ip);
 	struct sockaddr_in file_recv_addr;
 	bzero(&file_recv_addr,sizeof(file_recv_addr));
 	file_recv_addr.sin_family = AF_INET;
 	file_recv_addr.sin_port = htons(11111);
-	inet_pton(AF_INET,"127.0.0.1",&file_recv_addr.sin_addr);
+	inet_pton(AF_INET,eth0_ip,&file_recv_addr.sin_addr);
 	
 	if(bind(sockid_recvfile,(struct sockaddr *)&file_recv_addr,sizeof(file_recv_addr)) != 0)
 	{
@@ -1142,7 +1191,7 @@ void *client_file_recv(void *arg)
 	
 
 
-	sprintf(sendbuf,FILE_RECV,username,pFileTransmit->sendname,"127.0.0.1","11111");
+	sprintf(sendbuf,FILE_RECV,username,pFileTransmit->sendname,eth0_ip,"11111");
 	
 	send(sockfd,sendbuf,strlen(sendbuf),0);
 	
@@ -1160,7 +1209,7 @@ void *client_file_recv(void *arg)
 	bzero(&pFileTransmit->filename,sizeof(pFileTransmit->filename));
 	recv(connectid,pFileTransmit->filename,sizeof(pFileTransmit->filename ),0);
 	printf("%s\n",pFileTransmit->filename); //调试信息	
-	int filefd = open(pFileTransmit->filename,O_RDWR|O_CREAT,0777);
+	int filefd = open(pFileTransmit->filename,O_RDWR|O_CREAT|O_TRUNC,0777);
 	if(filefd < 0)
 	{
 		printf("file create error!\n");
@@ -1171,20 +1220,21 @@ void *client_file_recv(void *arg)
 		close(sockid_recvfile);
 		pthread_exit((void *)0);
 	}
-	//int lenth;
+	int lenth;
 	FD_ZERO(&readset);
 	FD_SET(connectid,&readset);
 	select(connectid+1,&readset,NULL,NULL,&tv);
-	while(recv(connectid,(char *)&file_recv,sizeof(file_recv),0) > 0)
+	while((lenth = recv(connectid,(char *)&(file_recv.data),sizeof(file_recv.data),0)) > 0)
 	{
-		//printf("%s:%d:%s\n",file_recv.name,file_recv.lenth,file_recv.data);       //调试信息
-		if(strcmp(file_recv.name,pFileTransmit->filename)!=0 )
-		{
-			printf("filename mismatch\n");
-			continue;
-		}
-		
-		write(filefd,file_recv.data,file_recv.lenth);
+		printf("%d\n",lenth);
+//		printf("%s:%d:\n",file_recv.name,file_recv.lenth);       //调试信息
+//		if(strcmp(file_recv.name,pFileTransmit->filename)!=0 )
+//		{
+//			printf("filename mismatch\n");
+//			continue;
+//		}
+		 
+		write(filefd,file_recv.data,lenth);
 		bzero(&file_recv,sizeof(file_recv));
 		FD_ZERO(&readset);
 		FD_SET(connectid,&readset);
@@ -1246,11 +1296,11 @@ void *client_file_send(void *arg)
 	int lenth;
 	while((lenth = read(filefd,sendfile.data,FILE_MAXLEN)) > 0)
 	{
-		// printf("read lenth:%d\n",lenth);
+		printf("read lenth:%d\n",lenth);
 		// printf("data lenth:%d\n",strlen(sendfile.data));
 		strcpy(sendfile.name,pFileTransmit->filename);
 		sendfile.lenth = lenth;
-		send(sockid_sendfile,(char *)&sendfile,sizeof(sendfile),0);
+		send(sockid_sendfile,(char *)&(sendfile.data),lenth,0);
 		bzero(&sendfile,sizeof(sendfile));
 	}
 	
@@ -1288,3 +1338,44 @@ int face(char *str,char*oldstr,char*newstr,char*buf)
 	}
 	return 0;
 }
+
+int geteth0ip(char *eth0_ip)               //获取本地eth0
+{
+	int ret;
+	int sockfd_geteth0;
+	//char ipaddr[50];
+
+	struct sockaddr_in *sin;
+	struct ifreq ifr_ip;
+
+	sockfd_geteth0 = socket(AF_INET, SOCK_STREAM, 0);
+	if(sockfd_geteth0 < 0)
+	{	
+		printf("socket error\n");
+		sprintf(sendbuf,C_FILE_RECV_ERR,username,pFileTransmit->sendname,"cannot receive");
+		send(sockfd,sendbuf,sizeof(sendbuf),0);
+		bzero(pFileTransmit,sizeof(struct file_transmit));
+		pFileTransmit->status = TRA_ST_REST;
+		pthread_exit((void *)1);
+	}
+
+	memset(&ifr_ip, 0, sizeof(ifr_ip));
+	strncpy(ifr_ip.ifr_name, "eth0", sizeof(ifr_ip.ifr_name) - 1);
+
+	ret = ioctl(sockfd_geteth0, SIOCGIFADDR, &ifr_ip);
+	if(ret < 0)
+	{	
+		printf("ioctl error\n");
+		sprintf(sendbuf,C_FILE_RECV_ERR,username,pFileTransmit->sendname,"cannot receive");
+		send(sockfd,sendbuf,sizeof(sendbuf),0);
+		bzero(pFileTransmit,sizeof(struct file_transmit));
+		pFileTransmit->status = TRA_ST_REST;
+		pthread_exit((void *)1);
+	}
+
+	sin = (struct sockaddr_in *)&ifr_ip.ifr_addr;
+	strcpy(eth0_ip, inet_ntoa(sin->sin_addr));
+	//printf("local ip:%s\n", ipaddr);
+	close(sockfd_geteth0);
+	return 0;
+}   
