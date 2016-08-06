@@ -13,59 +13,55 @@
 #include <pthread.h>
 #include <fcntl.h>
 #include <sys/stat.h>
-
 #include <sys/ioctl.h>
 #include <net/if.h>
-
 #include <libxml/parser.h>  
 #include <libxml/xmlmemory.h>
 #include <libxml/tree.h>
-
 #include <mysql/mysql.h>
-
 #include "log.h"
 
+int LOG_FLAG = 4;
 #define PORT 12321
 #define BUFFER_SIZE 512
 #define COUNTOF(x) (sizeof(x)/sizeof((x)[0]))
 
-int LOG_FLAG = 4;
-
-char sendbuf[BUFFER_SIZE];
-char recvbuf[BUFFER_SIZE];
-char stdinbuf[128];
-char sqlcmd[BUFFER_SIZE];
-MYSQL *conn;       //数据库
-char username[32];
-char groupname[32];
+static char sendbuf[BUFFER_SIZE];
+static char recvbuf[BUFFER_SIZE];
+static char stdinbuf[128];
+static char sqlcmd[BUFFER_SIZE];
+static MYSQL *conn;       //数据库
+static int sockfd;
 
 struct file_transmit{
-	int status;
+	int tra_status;
 	char sendname[32];
 	char recvname[32];
 	char filename[32];
-}*pFileTransmit;
-//定义文件传输状态，正在传输时或正在准备时无法再进行文件传输
-#define TRA_ST_RUN 1  //传输状态
-#define TRA_ST_REST 0  //文件传输的休息状态
-#define TRA_ST_PREP 2  //准备状态，即发送文件传输的信息直到双方建立连接的状态
-
-static int user_status;
-static int sockfd;
-	
-#define U_ST_LOGIN 1  //已登录
-#define U_ST_LOGOUT 0  //未登录
-#define U_ST_LOGING 2   //正在登陆
-#define U_ST_CHAT 3   //正在聊天   
-#define U_ST_GCHAT 4   //正在group聊天   
-
-
+};
 #define FILE_MAXLEN 1024
 struct waving_file{               //用于文件传输的结构体
 	char name[32];              //文件名，用于检查传输文件的正确性
 	int lenth;                     //文件内容的长度，用于校验信息的完整性
 	char data[FILE_MAXLEN];
 };
+struct chatuser{
+	char username[32];
+	int u_status;
+	char friendname[32];
+	char groupname[32];
+	struct file_transmit *ftra;
+}*ChatUser;
+//定义用户登录状态
+#define U_ST_LOGIN 1  //已登录
+#define U_ST_LOGOUT 0  //未登录
+#define U_ST_LOGING 2   //正在登陆
+#define U_ST_CHAT 3   //正在聊天   
+#define U_ST_GCHAT 4   //正在group聊天  
+//定义文件传输状态，正在传输时或正在准备时无法再进行文件传输
+#define TRA_ST_RUN 1  //传输状态
+#define TRA_ST_REST 0  //文件传输的休息状态
+#define TRA_ST_PREP 2  //准备状态，即发送文件传输的信息直到双方建立连接的状态
 
 //字符
 char* newstr[]={">_<","⊙﹏⊙","^_^","-_-","..@_@..","(0_0;)","o_0","O__O","o_O???","一 一+","(*>﹏<*)","('')Y","(~_~)/"};
@@ -84,11 +80,11 @@ char* oldstr[]={"#01","#02","#03","#04","#05","#06","#07","#08","#09","#10","#11
 *************create %s : 创建一个组
 *************delete %s : 创建者可以摧毁一个组
 *************show group :　显示该用户已加入的组
+*************gchat : 指定聊天的对象组
+*************group list : 显示组内所有成员
 *************show record : 显示用户所有的聊天记录
 *************clean record : 清理用户所有聊天记录，只清楚自己发送的
-*************show grouprecord %s : 显示指定组的所有聊天记录，自己必须在这个组中
 *************/
-
 
 const char SEND_MSG[]={
 	"<xml>"
@@ -119,7 +115,6 @@ const char REQLIST[]={
     "<CMD>ReqList</CMD>"
     "</xml>"
 };
-
 
 const char GROUP_MSG[]={    //group发生信息-
 	"<xml>"
@@ -183,14 +178,15 @@ const char C_FILE_RECV_ERR[]={      //接收端出现异常时，发送给服务
 	"</xml>"
 };
 
-
-int showgroup();
-int joingroup();
-int leavegroup();
-int creategroup();
-int deletegroup();
 int startup_handler(void);
 int mysql_query_my(MYSQL *conn, const char *str);
+int face(char *str,char*oldstr,char*newstr,char*buf);//表情函数；
+int geteth0ip(char *);
+
+void *client_file_recv(void *);
+void *client_file_send(void *);
+void *client_alive(void *);   //线程函数，用于定时向服务器发送信息
+
 int recv_message(xmlDocPtr, xmlNodePtr);
 int login_res(xmlDocPtr doc, xmlNodePtr cur);
 int send_res(xmlDocPtr doc, xmlNodePtr cur);
@@ -199,25 +195,13 @@ int list_res(xmlDocPtr doc, xmlNodePtr cur);
 int recv_groupmsg(xmlDocPtr doc, xmlNodePtr cur);
 int file_send_to(xmlDocPtr doc, xmlNodePtr cur);
 int file_recv_from(xmlDocPtr doc, xmlNodePtr cur);
-int face(char *str,char*oldstr,char*newstr,char*buf);//表情函数；
-void *client_file_recv(void *);
-void *client_file_send(void *);
-void *client_alive(void *);   //线程函数，用于定时向服务器发送信息
-int load_user();     //用于登陆账号
-int regist_user();   //注册账号
-int show_record(void);
-int clean_record(void );
-int showgrouprecord();
 
-int geteth0ip(char *);
-
-typedef int (*pfun)(xmlDocPtr,xmlNodePtr);
+typedef int (*pfun_xml)(xmlDocPtr,xmlNodePtr);
 
 typedef struct{
 	char operator[32];
-	pfun func;
+	pfun_xml func;
 }xml_handler_t;
-
 
 xml_handler_t xml_handler_table[] = {
 	{"msg",recv_message},
@@ -231,17 +215,69 @@ xml_handler_t xml_handler_table[] = {
 	{"GroupList", list_res}
 };
 
+
+int load_user();     //用于登陆账号
+int login_user();
+int regist_user();   //注册账号
+int logout_user();
+int quit_chat();
+int showlist();
+int show_record(void);
+int clean_record(void );
+//int showgrouprecord();
+int showgroup();
+int joingroup();
+int leavegroup();
+int creategroup();
+int deletegroup();
+int grouplist();
+int chatgroup();
+int sendfile();
+int singlechat();
+int sendchatmsg();
+
+typedef int (*pfun_cmd)(void);
+
+typedef struct{
+	char cmd[32];
+	pfun_cmd func;
+}cmd_handler_t;
+
+cmd_handler_t cmdin_handler_table[] ={	
+	{"logout",logout_user},
+	{"show list",showlist},
+	{"show group",showgroup},
+	{"group list",grouplist},
+	{"show record",show_record},
+	{"clean record",clean_record},
+	{"join",joingroup},
+	{"leave",leavegroup},
+	{"create",creategroup},
+	{"delete",deletegroup},
+	{"gchat",chatgroup},
+	{"chat",singlechat},
+	{"send file",sendfile},
+	{"",sendchatmsg}
+};
+
+cmd_handler_t cmdout_handler_table[] ={
+	{"login",login_user},
+	{"regist",regist_user},
+	{"quit",quit_chat}
+};
+
+
+
 int main(int argc, char *argv[])   //指定服务器ip地址
 {
-	pFileTransmit = (struct file_transmit *)malloc(sizeof(struct file_transmit));
+	ChatUser = (struct chatuser *)malloc(sizeof(struct chatuser));
+	ChatUser->ftra = (struct file_transmit *)malloc(sizeof(struct file_transmit));
     struct pollfd fds[2];
 	struct hostent *host;
 	struct sockaddr_in serv_addr;
-	char friendname[32] = {0};
-//	char filename[32] = {0};
 	
-	user_status = U_ST_LOGOUT;
-	pFileTransmit->status = TRA_ST_REST;
+	ChatUser->u_status = U_ST_LOGOUT;
+	ChatUser->ftra->tra_status = TRA_ST_REST;
     
 	startup_handler();
 	
@@ -289,284 +325,51 @@ int main(int argc, char *argv[])   //指定服务器ip地址
     fds[0].events = POLLIN;
     fds[1].fd = sockfd;
     fds[1].events = POLLRDNORM;
-	printf("input login to login,regist to register a new account or quit to exit\n");
+	
+	printf("user_status:logout\n");
+	printf("input login to login ,regist to register a new account or quit to exit\n");
 	while(1)
     {
 		bzero(sendbuf,sizeof(sendbuf));
         poll(fds, 2, 4000);
         if(fds[0].revents & POLLIN) //数据可读
         {
-			if(user_status != U_ST_LOGOUT && user_status != U_ST_LOGING)
-				{
+			if(ChatUser->u_status != U_ST_LOGOUT && ChatUser->u_status != U_ST_LOGING)
+			{
 				fgets(stdinbuf,sizeof(stdinbuf),stdin);
 				stdinbuf[strlen(stdinbuf)-1] = '\0';
-				if(strncmp(stdinbuf,"logout",strlen("logout")) ==0)
+				int i;	 
+				for(i=0; i<COUNTOF(cmdin_handler_table); i++)
 				{
-					sprintf(sendbuf,LOGOUT_MSG,username);
-					send(sockfd,sendbuf,strlen(sendbuf),0);
-					user_status = U_ST_LOGOUT;	
-				}
-				else if(strncmp(stdinbuf,"show list",strlen("show list")) == 0)
-				{
-					sprintf(sendbuf,REQLIST,username);
-					send(sockfd,sendbuf,strlen(sendbuf),0);
-				}
-				// else if(strncmp(stdinbuf,"show grouprecord",strlen("show grouprecord")) == 0)
-				// {	
-					// strtok(stdinbuf," ");
-					// strtok(stdinbuf," ");
-					// char *str;
-					// if((str = strtok(NULL," ")) == NULL)
-					// {
-						// printf("please input the group you want to show record!\n");
-					// }
-					// else
-					// {
-						// bzero(groupname,sizeof(groupname));
-						// strcpy(groupname,str);
-						// sprintf(sqlcmd,"select groupname from chatgroup where groupname='%s'",groupname);
-						// mysql_query_my(conn,sqlcmd);
-						// MYSQL_RES *res = mysql_store_result(conn);
-						// if(res==NULL)
-						// {
-							// printf("select * from error!\n");
-							// continue;
-						// }
-						// MYSQL_ROW row;
-						// row = mysql_fetch_row(res);
-						// if(row == NULL)	
-						// {
-							// printf("no such group\n");	
-							// continue;
-						// }
-						// else
-						// {
-							// sprintf(sqlcmd, "select user from %s where user='%s'", (char*) row[0],username);
-							// mysql_query_my(conn, sqlcmd);
-							// MYSQL_RES * grpres = mysql_store_result(conn);
-							// MYSQL_ROW grprow = mysql_fetch_row(grpres);
-							// if(grprow == NULL)
-							// {
-								// printf("you not in this group");
-								// continue;
-							// }
-							// showgrouprecord();
-						// }	
-						// bzero(groupname,sizeof(groupname));
-					// }
-				// }
-	
-				else if(strncmp(stdinbuf,"show group",strlen("show group")) == 0)// 发送show group 命令；
-				{
-					showgroup();
-				}
-				else if(strncmp(stdinbuf,"show record",strlen("show record")) == 0)// 发送show record 命令；
-				{
-					show_record();
-				}
-				else if(strncmp(stdinbuf,"clean record",strlen("clean record")) == 0)
-				{
-					clean_record();
-				}
-				else if(strncmp(stdinbuf,"join",strlen("join")) == 0) //join group
-				{
-					strtok(stdinbuf," ");
-					char *str;
-					if((str = strtok(NULL," ")) == NULL)
+					if(strncmp(cmdin_handler_table[i].cmd,stdinbuf,strlen(cmdin_handler_table[i].cmd))==0)
 					{
-						printf("please input the group name you want to join!\n");
-					}
-					else
-					{
-						strcpy(groupname,str);
-						joingroup();
-					}
-				}
-				else if(strncmp(stdinbuf,"leave",strlen("leave")) == 0) //join group
-				{
-					strtok(stdinbuf," ");
-					char *str;
-					if((str = strtok(NULL," ")) == NULL)
-					{
-						printf("please input the group name you want to leave!\n");
-					}
-					else
-					{
-						strcpy(groupname,str);
-						leavegroup();
-						
-					}
-				}
-				else if(strncmp(stdinbuf,"create",strlen("create")) == 0) //join group
-				{
-					strtok(stdinbuf," ");
-					char *str;
-					if((str = strtok(NULL," ")) == NULL)
-					{
-						printf("please input the group name you want to leave!\n");
-					}
-					else
-					{
-						if(strcmp(str,"group"))
-						{
-							strcpy(groupname,str);
-							creategroup();
-						}
-						else
-							printf("cannot create group!!\n");	
-					}
-				}
-				else if(strncmp(stdinbuf,"delete",strlen("delete")) == 0) //join group
-				{
-					strtok(stdinbuf," ");
-					char *str;
-					if((str = strtok(NULL," ")) == NULL)
-					{
-						printf("please input the group name you want to delete!\n");
-					}
-					else
-					{
-						strcpy(groupname,str);
-						deletegroup();
-						
-					}
-				}
-				else if(strncmp(stdinbuf,"chatgroup",strlen("chatgroup")) == 0) //chatgroup name
-				{
-					strtok(stdinbuf," ");
-					char *str;
-					if((str = strtok(NULL," ")) == NULL)
-					{
-						printf("please input the name you want to chat with!\n");
-					}
-					else
-					{
-						strcpy(groupname,str);
-						sprintf(sqlcmd,"select groupname from chatgroup where groupname='%s'",groupname);
-						mysql_query_my(conn,sqlcmd);
-						MYSQL_RES *res = mysql_store_result(conn);
-						if(res==NULL)
-						{
-							printf("select * from error!\n");
-							continue;
-						}
-						MYSQL_ROW row;
-						row = mysql_fetch_row(res);
-						if(row == NULL)	
-						{
-							printf("no such group\n");	
-							continue;
-						}
-						else
-						{
-							sprintf(sqlcmd, "select user from %s where user='%s'", (char*) row[0],username);
-							mysql_query_my(conn, sqlcmd);
-							MYSQL_RES * grpres = mysql_store_result(conn);
-							MYSQL_ROW grprow = mysql_fetch_row(grpres);
-							if(grprow == NULL)
-							{
-								printf("you not in this group");
-							}
-							else
-							{
-								strcpy(friendname,str);
-								user_status = U_ST_GCHAT;
-							}
-						}	
-						
-					}
-				}
-				
-				else if(strncmp(stdinbuf,"chat",strlen("chat")) == 0) //chat name
-				{
-					strtok(stdinbuf," ");
-					char *str;
-					if((str = strtok(NULL," ")) == NULL)
-					{
-						printf("please input the name you want to chat with!\n");
-					}
-					else
-					{
-						strcpy(friendname,str);
-						user_status = U_ST_CHAT;
-					}
-				}
-				else if(strncmp(stdinbuf,"send file",strlen("send file")) == 0)
-				{
-
-					printf("friend name:");
-					fgets(pFileTransmit->recvname,sizeof(pFileTransmit->recvname),stdin);
-					pFileTransmit->recvname[strlen(pFileTransmit->recvname)-1] = '\0';
-					
-					pFileTransmit->status = TRA_ST_PREP;
-
-					strcpy(pFileTransmit->sendname,username);
-					// printf("file name:");
-					// fgets(filename,sizeof(filename),stdin);
-					// filename[strlen(filename)-1] = '\0';
-					sprintf(sendbuf,FILE_SEND,pFileTransmit->sendname,pFileTransmit->recvname);
-					send(sockfd,sendbuf,strlen(sendbuf),0);
-				}
-				else if(strncmp(stdinbuf,"group list",strlen("group list"))==0 && user_status == U_ST_GCHAT)
-				{
-					sprintf(sendbuf,GROUP_LIST,username,friendname);
-					send(sockfd,sendbuf,strlen(sendbuf),0);
-				}
-				else if(user_status == U_ST_CHAT)//chat发送-
-				{
-					bzero(sqlcmd,sizeof(sqlcmd));
-					sprintf(sqlcmd,"insert into chatrecord values('%s','%s','%s')",username,friendname,stdinbuf);
-					if(mysql_query_my(conn,sqlcmd) <0)
-					{
-						printf("record error!\n");
-					}
-					sprintf(sendbuf,SEND_MSG,username,friendname,stdinbuf);
-					send(sockfd,sendbuf,strlen(sendbuf),0);
-				}
-				else if(user_status == U_ST_GCHAT)//chatgroup发送-
-				{
-					bzero(sqlcmd,sizeof(sqlcmd));
-					sprintf(sqlcmd,"insert into chatrecord values('%s','%s','%s')",username,friendname,stdinbuf);
-					if(mysql_query_my(conn,sqlcmd) <0)
-					{
-						printf("record error!\n");
-					}
-					sprintf(sendbuf,GROUP_MSG,username,friendname,stdinbuf);
-					send(sockfd,sendbuf,strlen(sendbuf),0);
-				}
-				else
-				{
-					printf("input chat somebody to chat ，chat somegroup to chat, input show list to show friend who online\n");
+						cmdin_handler_table[i].func();	
+						break;
+					}	
 				}
 			}
 			else
 			{
 				char *this_status[4] = {"logout","login","loging","chat"};
+				
 				fgets(stdinbuf,sizeof(stdinbuf),stdin);
 				stdinbuf[strlen(stdinbuf)-1] = '\0';
-				if(strncmp(stdinbuf,"login",strlen("login")) ==0)
+				if(strncmp(stdinbuf,"quit",strlen("quit")) == 0)
+					break;			
+				int i;	 
+				for(i=0; i<COUNTOF(cmdout_handler_table); i++)
 				{
-					if(load_user() == 0)
+					if(strncmp(cmdout_handler_table[i].cmd,stdinbuf,strlen(cmdout_handler_table[i].cmd))==0)
 					{
-						sprintf(sendbuf, LOGIN_MSG, username);
-						if(send(sockfd, sendbuf, strlen(sendbuf), 0)<0)
-							printf("send %d:%s", errno, strerror(errno));
-						else
-						{
-							user_status = U_ST_LOGIN;
-							continue;
-						}
+						cmdout_handler_table[i].func();	
+						break;
 					}
 				}
-				else if(strncmp(stdinbuf,"regist",strlen("regist")) == 0)
-					regist_user();
-				else if(strncmp(stdinbuf,"quit",strlen("quit")) == 0)
-					break;
-				
-				printf("user_status:%s\n",this_status[user_status]);
-				printf("input login to login again ,regist to register a new account or quit to exit\n");
+				printf("user_status:%s\n",this_status[ChatUser->u_status]);
+				if(ChatUser->u_status == U_ST_LOGOUT)
+					printf("input login to login ,regist to register a new account or quit to exit\n");				
 			}
-        }
+		}
         if(fds[1].revents & POLLRDNORM)
         {
             xmlDocPtr doc;   //定义解析文档指针
@@ -575,7 +378,7 @@ int main(int argc, char *argv[])   //指定服务器ip地址
             if(recvlen <= 0)
 			{
 				printf("connect is broken!\n");
-				user_status = U_ST_LOGOUT;
+				ChatUser->u_status = U_ST_LOGOUT;
 				exit(0);
 			}
             recvbuf[recvlen] = 0;
@@ -615,35 +418,25 @@ int main(int argc, char *argv[])   //指定服务器ip地址
         }
     }
 	pthread_cancel(tid_alive);
-	free(pFileTransmit);
+	free(ChatUser->ftra);
+	free(ChatUser);
 	close(sockfd);
 	exit(0);
 }
 
-int showgrouprecord(void)
+int singlechat()
 {
-	sprintf(sqlcmd,"select * from chatrecord where fname='%s' or tname='%s'",groupname,groupname);//打印chatrecord的表
-	mysql_query_my(conn,sqlcmd);
-	MYSQL_RES *res = mysql_store_result(conn);
-	 if(res==NULL)
+	strtok(stdinbuf," ");
+	char *str;
+	if((str = strtok(NULL," ")) == NULL)
 	{
-		printf("no record!\n");
+		printf("please input the name you want to chat with!\n");
 		return -1;
 	}
-	MYSQL_ROW row;
-	while((row = mysql_fetch_row(res))!= NULL)//一行行读取表的内容
-	{
-		// sprintf(sqlcmd, "select user from %s where user='%s'", (char*) row[0],username);
-		// mysql_query_my(conn, sqlcmd);
-		// MYSQL_RES * groupres = mysql_store_result(conn);
-		// MYSQL_ROW rowgroup= mysql_fetch_row(groupres);
-		// if(rowgroup == NULL)
-			// continue;
-		printf("%s >> %s : %s\n",(char* )row[0],(char *)row[1],(char *)row[2]);
-	}
+	strcpy(ChatUser->friendname,str);
+	ChatUser->u_status = U_ST_CHAT;
 	return 0;
 }
-
 int showgroup()
 {
 	sprintf(sqlcmd,"select * from chatgroup");//打印chatgroup的表
@@ -657,7 +450,7 @@ int showgroup()
 	MYSQL_ROW row;
 	while((row = mysql_fetch_row(res))!= NULL)//一行行读取表的内容
 	{
-		sprintf(sqlcmd, "select user from %s where user='%s'", (char*) row[0],username);
+		sprintf(sqlcmd, "select user from %s where user='%s'", (char*) row[0],ChatUser->username);
 		mysql_query_my(conn, sqlcmd);
 		MYSQL_RES * groupres = mysql_store_result(conn);
 		//MYSQL_RES *result = mysql_store_result(conn);
@@ -669,10 +462,56 @@ int showgroup()
 	return 0;
 	
 }
-
+int chatgroup()
+{
+	strtok(stdinbuf," ");
+	char *str;
+	if((str = strtok(NULL," ")) == NULL)
+	{
+		printf("please input the group you want to chat with!\n");
+		return -1;
+	}
+	strcpy(ChatUser->groupname,str);
+	sprintf(sqlcmd,"select groupname from chatgroup where groupname='%s'",ChatUser->groupname);
+	mysql_query_my(conn,sqlcmd);
+	MYSQL_RES *res = mysql_store_result(conn);
+	if(res==NULL)
+	{
+		printf("select * from error!\n");
+		return -1;
+	}
+	MYSQL_ROW row;
+	row = mysql_fetch_row(res);
+	if(row == NULL)	
+	{
+		printf("no such group\n");	
+		return -1;
+	}
+	else
+	{
+		sprintf(sqlcmd, "select user from %s where user='%s'", (char*) row[0],ChatUser->username);
+		mysql_query_my(conn, sqlcmd);
+		MYSQL_RES * grpres = mysql_store_result(conn);
+		MYSQL_ROW grprow = mysql_fetch_row(grpres);
+		if(grprow == NULL)
+		{
+			printf("you not in this group");
+			return -1;
+		}	
+		ChatUser->u_status = U_ST_GCHAT;	
+	}	
+	return 0;
+}
 int joingroup()
 {
-	sprintf(sqlcmd,"select groupname from chatgroup where groupname='%s'",groupname);
+	strtok(stdinbuf," ");
+	char *str;
+	if((str = strtok(NULL," ")) == NULL)
+	{
+		printf("please input the group name you want to join!\n");
+		return -1;
+	}
+	sprintf(sqlcmd,"select groupname from chatgroup where groupname='%s'",str);
 	mysql_query_my(conn,sqlcmd);
 	MYSQL_RES *res = mysql_store_result(conn);
 	if(res==NULL)
@@ -688,13 +527,13 @@ int joingroup()
 	}
 	else
 	{
-		sprintf(sqlcmd, "select user from %s where user='%s'", (char*) row[0],username);
+		sprintf(sqlcmd, "select user from %s where user='%s'", (char*) row[0],ChatUser->username);
 		mysql_query_my(conn, sqlcmd);
 		MYSQL_RES *grpres = mysql_store_result(conn);
 		MYSQL_ROW grprow = mysql_fetch_row(grpres);
 		if(grprow ==NULL )//自己不在组里-
 		{
-			sprintf(sqlcmd,"insert into %s (user) values ('%s')",(char *)row[0],username);
+			sprintf(sqlcmd,"insert into %s (user) values ('%s')",(char *)row[0],ChatUser->username);
 			mysql_query_my(conn,sqlcmd);
 			mysql_store_result(conn);
 			printf("success\n");
@@ -709,13 +548,20 @@ int joingroup()
 }
 int leavegroup()
 {
-	sprintf(sqlcmd,"select groupname from chatgroup where groupname='%s'",groupname);
+	strtok(stdinbuf," ");
+	char *str;
+	if((str = strtok(NULL," ")) == NULL)
+	{
+		printf("please input the group name you want to leave!\n");
+		return -1;
+	}	
+	sprintf(sqlcmd,"select groupname from chatgroup where groupname='%s'",str);
 	mysql_query_my(conn,sqlcmd);
 	MYSQL_RES *res = mysql_store_result(conn);
 	if(res==NULL)
 	{
 		printf("select * from error!\n");
-		exit(1);
+		return -1;
 	}
 	MYSQL_ROW row;
 	row = mysql_fetch_row(res);
@@ -725,7 +571,7 @@ int leavegroup()
 	}
 	else
 	{
-		sprintf(sqlcmd, "select user from %s where user='%s'", (char*) row[0],username);
+		sprintf(sqlcmd, "select user from %s where user='%s'", (char*) row[0],ChatUser->username);
 		mysql_query_my(conn, sqlcmd);
 		MYSQL_RES * grpres = mysql_store_result(conn);
 		MYSQL_ROW grprow = mysql_fetch_row(grpres);
@@ -735,32 +581,45 @@ int leavegroup()
 		}
 		else
 		{
-			sprintf(sqlcmd,"delete from %s where user='%s'",(char *)row[0],username);
+			sprintf(sqlcmd,"delete from %s where user='%s'",(char *)row[0],ChatUser->username);
 			mysql_query_my(conn,sqlcmd);
 			printf("delete success\n");
-			user_status = U_ST_LOGIN;
-			return 0;
+			if(ChatUser->u_status == U_ST_GCHAT)
+				ChatUser->u_status = U_ST_LOGIN;
 		}
 	}	
 	return 0;
 }
 int creategroup()
 {
-	sprintf(sqlcmd,"select groupname from chatgroup where groupname='%s'",groupname);
+	strtok(stdinbuf," ");
+	char *str;
+	if((str = strtok(NULL," ")) == NULL)
+	{
+		printf("please input the group name you want to leave!\n");
+		return -1;
+	}
+
+	if(strcmp(str,"group") == 0)
+	{
+		printf("unable name!\n");
+		return -1;
+	}
+	sprintf(sqlcmd,"select groupname from chatgroup where groupname='%s'",str);
 	mysql_query_my(conn,sqlcmd);
 	MYSQL_RES *res = mysql_store_result(conn);
 	if(res==NULL)
 	{
 		printf("select error!\n");
-		exit(1);
+		return -1;
 	}
 	MYSQL_ROW row;
 	row = mysql_fetch_row(res);
 	if(row == NULL)
 	{
-		sprintf(sqlcmd, "insert into chatgroup (groupname) value ('%s') ", groupname);
+		sprintf(sqlcmd, "insert into chatgroup (groupname) value ('%s') ", str);
 		mysql_query_my(conn, sqlcmd);
-		sprintf(sqlcmd, "create table %s(user varchar(20))", groupname);//创建表
+		sprintf(sqlcmd, "create table %s(user varchar(20))", str);//创建表
 		mysql_query_my(conn, sqlcmd);
 		printf("create success\n");
 		joingroup();
@@ -773,7 +632,15 @@ int creategroup()
 }
 int deletegroup()
 {
-	sprintf(sqlcmd,"select groupname from chatgroup where groupname='%s'",groupname);
+	strtok(stdinbuf," ");
+	char *str;
+	if((str = strtok(NULL," ")) == NULL)
+	{
+		printf("please input the group name you want to delete!\n");
+		return -1;
+	}
+
+	sprintf(sqlcmd,"select groupname from chatgroup where groupname='%s'",str);
 	mysql_query_my(conn,sqlcmd);
 	MYSQL_RES *res = mysql_store_result(conn);
 	if(res==NULL)
@@ -789,20 +656,22 @@ int deletegroup()
 	}
 	else
 	{
-		sprintf(sqlcmd,"select * from %s",groupname);
+		sprintf(sqlcmd,"select * from %s",str);
 		mysql_query_my(conn,sqlcmd);
 		MYSQL_RES *grpres = mysql_store_result(conn);
 		MYSQL_ROW grprow = mysql_fetch_row(grpres);
-		if(strcmp((char *)grprow[0],username))
+		if(strcmp((char *)grprow[0],ChatUser->username))
 		{
 			printf("over your right\n");
 			return 0;
 		}
-		sprintf(sqlcmd, "delete from chatgroup where groupname=('%s') ", groupname);
+		sprintf(sqlcmd, "delete from chatgroup where groupname=('%s') ", str);
 		mysql_query_my(conn, sqlcmd);
-		sprintf(sqlcmd, "drop table %s", groupname);//创建表
+		sprintf(sqlcmd, "drop table %s", str);
 		mysql_query_my(conn, sqlcmd);
 		printf("deldete success\n");
+		if(ChatUser->u_status == U_ST_GCHAT)
+			ChatUser->u_status = U_ST_LOGIN;
 	}
 	return 0;
 }
@@ -812,15 +681,15 @@ int load_user()
     while(1)
     {
 		printf("username:");
-		fgets(username,sizeof(username),stdin);
-		username[strlen(username)-1] = '\0';
+		fgets(ChatUser->username,sizeof(ChatUser->username),stdin);
+		ChatUser->username[strlen(ChatUser->username)-1] = '\0';
 
 		bzero(stdinbuf,sizeof(stdinbuf));
 		printf("passwd:");
         fgets(passwd, 32, stdin);
 		passwd[strlen(passwd)-1] = '\0';
 
-        sprintf(sqlcmd, "select passwd from user where UserName='%s'", username);
+        sprintf(sqlcmd, "select passwd from user where UserName='%s'", ChatUser->username);
         mysql_query_my(conn, sqlcmd);
         MYSQL_RES *res = mysql_store_result(conn);
         if(res==NULL)
@@ -843,17 +712,88 @@ int load_user()
 			else
 			{
 				printf("this username hasn't regist!\n");
-				bzero(username,sizeof(username));
+				bzero(ChatUser->username,sizeof(ChatUser->username));
 				continue;
 			}
 		}		
     }	
 	return 0;
 }
+int login_user()
+{
+	if(load_user() == 0)
+	{
+		sprintf(sendbuf, LOGIN_MSG, ChatUser->username);
+		if(send(sockfd, sendbuf, strlen(sendbuf), 0)<0)
+			printf("send %d:%s", errno, strerror(errno));
+		else
+			ChatUser->u_status = U_ST_LOGIN;
+	}
+	return 0;
+}
+int sendfile()
+{
+	printf("friend name:");
+	fgets(ChatUser->ftra->recvname,sizeof(ChatUser->ftra->recvname),stdin);
+	ChatUser->ftra->recvname[strlen(ChatUser->ftra->recvname)-1] = '\0';
+	
+	ChatUser->ftra->tra_status = TRA_ST_PREP;
 
+	strcpy(ChatUser->ftra->sendname,ChatUser->username);
+
+	sprintf(sendbuf,FILE_SEND,ChatUser->ftra->sendname,ChatUser->ftra->recvname);
+	send(sockfd,sendbuf,strlen(sendbuf),0);
+	return 0;
+}
+int sendchatmsg()
+{
+	if(ChatUser->u_status == U_ST_CHAT)//chat发送-
+	{
+		bzero(sqlcmd,sizeof(sqlcmd));
+		sprintf(sqlcmd,"insert into chatrecord values('%s','%s','%s')",\
+			ChatUser->username,ChatUser->friendname,stdinbuf);
+		if(mysql_query_my(conn,sqlcmd) <0)
+		{
+			printf("record error!\n");
+		}
+		sprintf(sendbuf,SEND_MSG,ChatUser->username,ChatUser->friendname,stdinbuf);
+		send(sockfd,sendbuf,strlen(sendbuf),0);
+	}
+	else if(ChatUser->u_status == U_ST_GCHAT)//chatgroup发送-
+	{
+		bzero(sqlcmd,sizeof(sqlcmd));
+		sprintf(sqlcmd,"insert into chatrecord values('%s','%s','%s')",\
+			ChatUser->username,ChatUser->groupname,stdinbuf);
+		if(mysql_query_my(conn,sqlcmd) <0)
+		{
+			printf("record error!\n");
+		}
+		sprintf(sendbuf,GROUP_MSG,ChatUser->username,ChatUser->groupname,stdinbuf);
+		send(sockfd,sendbuf,strlen(sendbuf),0);
+	}
+	else
+	{
+		printf("input chat somebody to chat ，chat somegroup to chat, input show list to show friend who online\n");
+	}
+	return 0;
+}
+int grouplist()
+{
+	sprintf(sendbuf,GROUP_LIST,ChatUser->username,ChatUser->groupname);
+	send(sockfd,sendbuf,strlen(sendbuf),0);
+	return 0;
+}
+int logout_user()
+{
+	sprintf(sendbuf,LOGOUT_MSG,ChatUser->username);
+	send(sockfd,sendbuf,strlen(sendbuf),0);
+	ChatUser->u_status = U_ST_LOGOUT;	
+	return 0;
+}
 int show_record(void)
 {
-	sprintf(sqlcmd,"select * from chatrecord where fname='%s' or tname='%s'",username,username);//打印chatrecord的表
+	sprintf(sqlcmd,"select * from chatrecord where fname='%s' or tname='%s'",\
+		ChatUser->username,ChatUser->username);//打印chatrecord的表
 	mysql_query_my(conn,sqlcmd);
 	MYSQL_RES *res = mysql_store_result(conn);
 	 if(res==NULL)
@@ -875,10 +815,16 @@ int show_record(void)
 	return 0;
 	
 }
+int showlist()
+{
+	sprintf(sendbuf,REQLIST,ChatUser->username);
+	send(sockfd,sendbuf,strlen(sendbuf),0);
+	return 0;
+}
 
 int clean_record(void)
 {
-	sprintf(sqlcmd,"delete from chatrecord where fname='%s'",username);//打印chatrecord的表
+	sprintf(sqlcmd,"delete from chatrecord where fname='%s'",ChatUser->username);//打印chatrecord的表
 	mysql_query_my(conn,sqlcmd);
 	return 0;
 } 
@@ -957,7 +903,7 @@ int startup_handler(void)
 	char value = 1;
 	mysql_options(conn, MYSQL_OPT_RECONNECT, (char *)&value);
     //连接数据库
-    if (!mysql_real_connect(conn, "yeyl.site", "yeyl", "123456", "MyChat", 0, NULL, 0)) 
+    if (!mysql_real_connect(conn, "yeyl.site", "root", "201qyzx201", "MyChat", 0, NULL, 0)) 
     {
 		LOG_ERR_MYSQL(conn);
     }
@@ -982,9 +928,9 @@ void *client_alive(void *arg)
 	while(1)
 	{
 		sleep(100);
-		if(user_status == U_ST_LOGIN || user_status == U_ST_CHAT)
+		if(ChatUser->u_status == U_ST_LOGIN || ChatUser->u_status == U_ST_CHAT || ChatUser->u_status == U_ST_GCHAT)
 		{
-			sprintf(alive_buf,ALIVE_MSG,username);
+			sprintf(alive_buf,ALIVE_MSG,ChatUser->username);
 			send(sockfd,alive_buf,strlen(alive_buf),0);
 		}
 	}
@@ -1055,7 +1001,7 @@ int login_res(xmlDocPtr doc, xmlNodePtr cur)
 		return -1;
 	printf("%s\n",error);
 	if(strncmp((char *)error,"loged",strlen("loged"))==0)
-		user_status = U_ST_LOGOUT;
+		ChatUser->u_status = U_ST_LOGOUT;
 	free(error);
 	return 0;
 }
@@ -1086,7 +1032,7 @@ int logout_res(xmlDocPtr doc, xmlNodePtr cur)
 	error = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
 	if(error == NULL)
 		return -1;
-	user_status = U_ST_LOGOUT;
+	ChatUser->u_status = U_ST_LOGOUT;
 	printf("%s\n",error);
 	free(error);
 	return 0;
@@ -1157,17 +1103,17 @@ int file_send_to(xmlDocPtr doc, xmlNodePtr cur)
 			return -1;
 		error = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
 		printf("receive error : %s\n",error);
-		bzero(pFileTransmit,sizeof(struct file_transmit));
-		pFileTransmit->status = TRA_ST_REST;
+		bzero(ChatUser->ftra,sizeof(struct file_transmit));
+		ChatUser->ftra->tra_status = TRA_ST_REST;
 		free(error);
 		return 1;
 	}
 	userfrom = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
 	if(userfrom == NULL)
 		return -1;
-	if(pFileTransmit->status != TRA_ST_REST)
+	if(ChatUser->ftra->tra_status != TRA_ST_REST)
 	{
-		sprintf(sendbuf,C_FILE_RECV_ERR,username,userfrom,"cannot receive");
+		sprintf(sendbuf,C_FILE_RECV_ERR,ChatUser->username,userfrom,"cannot receive");
 		send(sockfd,sendbuf,sizeof(sendbuf),0);
 		return 0;
 	}
@@ -1176,15 +1122,15 @@ int file_send_to(xmlDocPtr doc, xmlNodePtr cur)
 	char c = getchar();
 	if(c == 'N' || c == 'n')
 	{
-		sprintf(sendbuf,C_FILE_RECV_ERR,username,userfrom,"refuse");
+		sprintf(sendbuf,C_FILE_RECV_ERR,ChatUser->username,userfrom,"refuse");
 		send(sockfd,sendbuf,sizeof(sendbuf),0);
 		free(userfrom);
 		return 0;
 	}
 	
-	pFileTransmit->status = TRA_ST_PREP;
-	strcpy(pFileTransmit->sendname,(char *)userfrom);
-	strcpy(pFileTransmit->recvname,username);
+	ChatUser->ftra->tra_status = TRA_ST_PREP;
+	strcpy(ChatUser->ftra->sendname,(char *)userfrom);
+	strcpy(ChatUser->ftra->recvname,ChatUser->username);
 	
 	pthread_t tid_FileTra;
 	pthread_create(&tid_FileTra,NULL,client_file_recv,NULL);
@@ -1211,61 +1157,61 @@ int file_recv_from(xmlDocPtr doc, xmlNodePtr cur)
 			return -1;
 		error = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
 		printf("send error : %s\n",error);
-		bzero(pFileTransmit,sizeof(struct file_transmit));
-		pFileTransmit->status = TRA_ST_REST;
+		bzero(ChatUser->ftra,sizeof(struct file_transmit));
+		ChatUser->ftra->tra_status = TRA_ST_REST;
 		free(error);
 		return 1;
 	}
 	userto = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
-	if(strcmp((char *)userto,pFileTransmit->recvname)!=0)
+	if(strcmp((char *)userto,ChatUser->ftra->recvname)!=0)
 	{
-		sprintf(sendbuf,C_FILE_SEND_ERR,username,userto,"mismatching");
+		sprintf(sendbuf,C_FILE_SEND_ERR,ChatUser->username,userto,"mismatching");
 		send(sockfd,sendbuf,strlen(sendbuf),0);
-		bzero(pFileTransmit,sizeof(struct file_transmit));
-		pFileTransmit->status = TRA_ST_REST;
+		bzero(ChatUser->ftra,sizeof(struct file_transmit));
+		ChatUser->ftra->tra_status = TRA_ST_REST;
 		return -1;
 	}
 	
 	if((cur = cur->next) == NULL)
 	{
-		sprintf(sendbuf,C_FILE_SEND_ERR,username,userto,"misaddr");
+		sprintf(sendbuf,C_FILE_SEND_ERR,ChatUser->username,userto,"misaddr");
 		send(sockfd,sendbuf,strlen(sendbuf),0);
-		bzero(pFileTransmit,sizeof(struct file_transmit));
-		pFileTransmit->status = TRA_ST_REST;
+		bzero(ChatUser->ftra,sizeof(struct file_transmit));
+		ChatUser->ftra->tra_status = TRA_ST_REST;
 		return -1;
 	}
 	if((cur = cur->xmlChildrenNode) == NULL)
 	{
-		sprintf(sendbuf,C_FILE_SEND_ERR,username,userto,"misaddrip");
+		sprintf(sendbuf,C_FILE_SEND_ERR,ChatUser->username,userto,"misaddrip");
 		send(sockfd,sendbuf,strlen(sendbuf),0);
-		bzero(pFileTransmit,sizeof(struct file_transmit));
-		pFileTransmit->status = TRA_ST_REST;
+		bzero(ChatUser->ftra,sizeof(struct file_transmit));
+		ChatUser->ftra->tra_status = TRA_ST_REST;
 		return -1;
 	}
 	recv_ip = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
 	if(recv_ip == NULL)
 	{		
-		sprintf(sendbuf,C_FILE_SEND_ERR,username,userto,"addrip is NULL");
+		sprintf(sendbuf,C_FILE_SEND_ERR,ChatUser->username,userto,"addrip is NULL");
 		send(sockfd,sendbuf,strlen(sendbuf),0);
-		bzero(pFileTransmit,sizeof(struct file_transmit));
-		pFileTransmit->status = TRA_ST_REST;
+		bzero(ChatUser->ftra,sizeof(struct file_transmit));
+		ChatUser->ftra->tra_status = TRA_ST_REST;
 		return -1;		
 	}
 	if((cur = cur->next) == NULL)
 	{
-		sprintf(sendbuf,C_FILE_SEND_ERR,username,userto,"misaddrport");
+		sprintf(sendbuf,C_FILE_SEND_ERR,ChatUser->username,userto,"misaddrport");
 		send(sockfd,sendbuf,strlen(sendbuf),0);
-		bzero(pFileTransmit,sizeof(struct file_transmit));
-		pFileTransmit->status = TRA_ST_REST;
+		bzero(ChatUser->ftra,sizeof(struct file_transmit));
+		ChatUser->ftra->tra_status = TRA_ST_REST;
 		return -1;
 	}
 	recv_port = xmlNodeListGetString(doc,cur->xmlChildrenNode,1);
 	if(recv_port == NULL)
 	{		
-		sprintf(sendbuf,C_FILE_SEND_ERR,username,userto,"addrport is NULL");
+		sprintf(sendbuf,C_FILE_SEND_ERR,ChatUser->username,userto,"addrport is NULL");
 		send(sockfd,sendbuf,strlen(sendbuf),0);
-		bzero(pFileTransmit,sizeof(struct file_transmit));
-		pFileTransmit->status = TRA_ST_REST;
+		bzero(ChatUser->ftra,sizeof(struct file_transmit));
+		ChatUser->ftra->tra_status = TRA_ST_REST;
 		return -1;
 	}
 	
@@ -1286,11 +1232,11 @@ void *client_file_recv(void *arg)
 	int sockid_recvfile = socket(AF_INET,SOCK_STREAM,0);
 	if(sockid_recvfile < 0)
 	{
-		sprintf(sendbuf,C_FILE_RECV_ERR,username,pFileTransmit->sendname,"cannot receive");
+		sprintf(sendbuf,C_FILE_RECV_ERR,ChatUser->username,ChatUser->ftra->sendname,"cannot receive");
 		send(sockfd,sendbuf,sizeof(sendbuf),0);
 		perror("socket");
-		bzero(pFileTransmit,sizeof(struct file_transmit));
-		pFileTransmit->status = TRA_ST_REST;
+		bzero(ChatUser->ftra,sizeof(struct file_transmit));
+		ChatUser->ftra->tra_status = TRA_ST_REST;
 		pthread_exit((void *)1);
 	}
 	int on = 1;
@@ -1306,27 +1252,27 @@ void *client_file_recv(void *arg)
 	
 	if(bind(sockid_recvfile,(struct sockaddr *)&file_recv_addr,sizeof(file_recv_addr)) != 0)
 	{
-		sprintf(sendbuf,C_FILE_RECV_ERR,username,pFileTransmit->sendname,"cannot receive");
+		sprintf(sendbuf,C_FILE_RECV_ERR,ChatUser->username,ChatUser->ftra->sendname,"cannot receive");
 		send(sockfd,sendbuf,sizeof(sendbuf),0);
 		perror("connect");
-		bzero(pFileTransmit,sizeof(struct file_transmit));
-		pFileTransmit->status = TRA_ST_REST;
+		bzero(ChatUser->ftra,sizeof(struct file_transmit));
+		ChatUser->ftra->tra_status = TRA_ST_REST;
 		pthread_exit((void *)1);
 	}
 	if(listen(sockid_recvfile,5) < 0)
 	{
-		sprintf(sendbuf,C_FILE_RECV_ERR,username,pFileTransmit->sendname,"cannot receive");
+		sprintf(sendbuf,C_FILE_RECV_ERR,ChatUser->username,ChatUser->ftra->sendname,"cannot receive");
 		send(sockfd,sendbuf,sizeof(sendbuf),0);
 		perror("listen");
-		bzero(pFileTransmit,sizeof(struct file_transmit));
-		pFileTransmit->status = TRA_ST_REST;
+		bzero(ChatUser->ftra,sizeof(struct file_transmit));
+		ChatUser->ftra->tra_status = TRA_ST_REST;
 		pthread_exit((void *)1);
 	}
-	pFileTransmit->status = TRA_ST_RUN;
+	ChatUser->ftra->tra_status = TRA_ST_RUN;
 	
 
 
-	sprintf(sendbuf,FILE_RECV,username,pFileTransmit->sendname,eth0_ip,"11111");
+	sprintf(sendbuf,FILE_RECV,ChatUser->username,ChatUser->ftra->sendname,eth0_ip,"11111");
 	
 	send(sockfd,sendbuf,strlen(sendbuf),0);
 	
@@ -1341,43 +1287,44 @@ void *client_file_recv(void *arg)
 	FD_SET(connectid,&readset);
 	select(connectid+1,&readset,NULL,NULL,&tv);
 	 
-	bzero(&pFileTransmit->filename,sizeof(pFileTransmit->filename));
-	recv(connectid,pFileTransmit->filename,sizeof(pFileTransmit->filename ),0);
-	printf("%s\n",pFileTransmit->filename); //调试信息	
-	int filefd = open(pFileTransmit->filename,O_RDWR|O_CREAT|O_TRUNC,0777);
+	bzero(&ChatUser->ftra->filename,sizeof(ChatUser->ftra->filename));
+	recv(connectid,ChatUser->ftra->filename,sizeof(ChatUser->ftra->filename ),0);
+	printf("%s\n",ChatUser->ftra->filename); //调试信息	
+	int filefd = open(ChatUser->ftra->filename,O_RDWR|O_CREAT|O_TRUNC,0777);
 	if(filefd < 0)
 	{
 		printf("file create error!\n");
-		bzero(pFileTransmit,sizeof(struct file_transmit));
-		pFileTransmit->status = TRA_ST_REST;
+		bzero(ChatUser->ftra,sizeof(struct file_transmit));
+		ChatUser->ftra->tra_status = TRA_ST_REST;
 		close(filefd);
 		close(connectid);
 		close(sockid_recvfile);
 		pthread_exit((void *)0);
 	}
+	int filelenth = 0;
 	int lenth;
 	FD_ZERO(&readset);
 	FD_SET(connectid,&readset);
 	select(connectid+1,&readset,NULL,NULL,&tv);
 	while((lenth = recv(connectid,(char *)&(file_recv.data),sizeof(file_recv.data),0)) > 0)
 	{
-		printf("%d\n",lenth);
+		//printf("%d\n",lenth);
 //		printf("%s:%d:\n",file_recv.name,file_recv.lenth);       //调试信息
 //		if(strcmp(file_recv.name,pFileTransmit->filename)!=0 )
 //		{
 //			printf("filename mismatch\n");
 //			continue;
 //		}
-		 
+		filelenth+=lenth;
 		write(filefd,file_recv.data,lenth);
 		bzero(&file_recv,sizeof(file_recv));
 		FD_ZERO(&readset);
 		FD_SET(connectid,&readset);
 		select(connectid+1,&readset,NULL,NULL,&tv);
 	}
-	printf("file send over\n");
-	bzero(pFileTransmit,sizeof(struct file_transmit));
-	pFileTransmit->status = TRA_ST_REST;
+	printf("file receive over,all %d received\n",filelenth);
+	bzero(ChatUser->ftra,sizeof(struct file_transmit));
+	ChatUser->ftra->tra_status = TRA_ST_REST;
 	close(filefd);
 	close(connectid);
 	close(sockid_recvfile);
@@ -1393,29 +1340,29 @@ void *client_file_send(void *arg)
 	int sockid_sendfile = socket(AF_INET,SOCK_STREAM,0);
 	if(sockid_sendfile < 0)
 	{
-		bzero(pFileTransmit,sizeof(struct file_transmit));
-		pFileTransmit->status = TRA_ST_REST;
+		bzero(ChatUser->ftra,sizeof(struct file_transmit));
+		ChatUser->ftra->tra_status = TRA_ST_REST;
 		free(arg);
 		close(sockid_sendfile);
 		pthread_exit((void *)1);
 	}
 	if(connect(sockid_sendfile,(struct sockaddr *)&file_recv_addr,sizeof(file_recv_addr)) < 0)
 	{
-		bzero(pFileTransmit,sizeof(struct file_transmit));
-		pFileTransmit->status = TRA_ST_REST;
+		bzero(ChatUser->ftra,sizeof(struct file_transmit));
+		ChatUser->ftra->tra_status = TRA_ST_REST;
 		free(arg);
 		close(sockid_sendfile);
 		pthread_exit((void *)1);
 	}
 
-	pFileTransmit->status = TRA_ST_RUN;
+	ChatUser->ftra->tra_status = TRA_ST_RUN;
 	while(1)
 	{
 		printf("file name : ");
 		fgets(stdinbuf,sizeof(stdinbuf),stdin);
 		stdinbuf[strlen(stdinbuf)-1] = '\0';
-		strcpy(pFileTransmit->filename,stdinbuf);
-		filefd = open(pFileTransmit->filename,O_RDONLY);
+		strcpy(ChatUser->ftra->filename,stdinbuf);
+		filefd = open(ChatUser->ftra->filename,O_RDONLY);
 		if(filefd < 0)
 		{
 			printf("cannot open this file!\n");
@@ -1423,28 +1370,27 @@ void *client_file_send(void *arg)
 		}
 		else break;
 	}
-	send(sockid_sendfile,pFileTransmit->filename,strlen(pFileTransmit->filename),0);
-	printf("sendfile %s\n",pFileTransmit->filename);
-	strcpy(sendfile.name,pFileTransmit->filename);
+	send(sockid_sendfile,ChatUser->ftra->filename,strlen(ChatUser->ftra->filename),0);
+	printf("sendfile %s\n",ChatUser->ftra->filename);
+	strcpy(sendfile.name,ChatUser->ftra->filename);
 	
 	usleep(1000*1000);
+	int filelenth = 0;
 	int lenth;
 	while((lenth = read(filefd,sendfile.data,FILE_MAXLEN)) > 0)
 	{
-		printf("read lenth:%d\n",lenth);
+		filelenth += lenth;
+		//printf("read lenth:%d\n",lenth);
 		// printf("data lenth:%d\n",strlen(sendfile.data));
-		strcpy(sendfile.name,pFileTransmit->filename);
+		strcpy(sendfile.name,ChatUser->ftra->filename);
 		sendfile.lenth = lenth;
 		send(sockid_sendfile,(char *)&(sendfile.data),lenth,0);
 		bzero(&sendfile,sizeof(sendfile));
 	}
-	
-	
-	printf("file send over\n");
-	//send(sockid_sendfile,"file send over",strlen("file send over"),0);
+	printf("file send over , all %d sent\n",filelenth);
 
-	bzero(pFileTransmit,sizeof(struct file_transmit));
-	pFileTransmit->status = TRA_ST_REST;
+	bzero(ChatUser->ftra,sizeof(struct file_transmit));
+	ChatUser->ftra->tra_status = TRA_ST_REST;
 	free(arg);
 	close(filefd);
 	close(sockid_sendfile);
@@ -1478,8 +1424,6 @@ int geteth0ip(char *eth0_ip)               //获取本地eth0
 {
 	int ret;
 	int sockfd_geteth0;
-	//char ipaddr[50];
-
 	struct sockaddr_in *sin;
 	struct ifreq ifr_ip;
 
@@ -1487,24 +1431,24 @@ int geteth0ip(char *eth0_ip)               //获取本地eth0
 	if(sockfd_geteth0 < 0)
 	{	
 		printf("socket error\n");
-		sprintf(sendbuf,C_FILE_RECV_ERR,username,pFileTransmit->sendname,"cannot receive");
+		sprintf(sendbuf,C_FILE_RECV_ERR,ChatUser->username,ChatUser->ftra->sendname,"cannot receive");
 		send(sockfd,sendbuf,sizeof(sendbuf),0);
-		bzero(pFileTransmit,sizeof(struct file_transmit));
-		pFileTransmit->status = TRA_ST_REST;
+		bzero(ChatUser->ftra,sizeof(struct file_transmit));
+		ChatUser->ftra->tra_status = TRA_ST_REST;
 		pthread_exit((void *)1);
 	}
 
 	memset(&ifr_ip, 0, sizeof(ifr_ip));
-	strncpy(ifr_ip.ifr_name, "ens33", sizeof(ifr_ip.ifr_name) - 1);
+	strncpy(ifr_ip.ifr_name, "eth0", sizeof(ifr_ip.ifr_name) - 1);
 
 	ret = ioctl(sockfd_geteth0, SIOCGIFADDR, &ifr_ip);
 	if(ret < 0)
 	{	
 		printf("ioctl error\n");
-		sprintf(sendbuf,C_FILE_RECV_ERR,username,pFileTransmit->sendname,"cannot receive");
+		sprintf(sendbuf,C_FILE_RECV_ERR,ChatUser->username,ChatUser->ftra->sendname,"cannot receive");
 		send(sockfd,sendbuf,sizeof(sendbuf),0);
-		bzero(pFileTransmit,sizeof(struct file_transmit));
-		pFileTransmit->status = TRA_ST_REST;
+		bzero(ChatUser->ftra,sizeof(struct file_transmit));
+		ChatUser->ftra->tra_status = TRA_ST_REST;
 		pthread_exit((void *)1);
 	}
 
@@ -1514,3 +1458,8 @@ int geteth0ip(char *eth0_ip)               //获取本地eth0
 	close(sockfd_geteth0);
 	return 0;
 }   
+
+int quit_chat()
+{
+	return 0;
+}
