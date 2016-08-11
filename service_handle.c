@@ -61,6 +61,27 @@ const char LIST_RES[]={
 	"</xml>"
 };
 
+const char LIST_RES_END[]={
+	"<xml>"
+	"<CMD>ReqList</CMD>"
+	"<ERROR>success</ERROR>"
+	"</xml>"
+};
+
+const char USER_LOGIN[]={
+	"<xml>"
+	"<CMD>userLogin</CMD>"
+	"<User>%s</User>"
+	"</xml>"
+};
+
+const char USER_LOGOUT[]={
+	"<xml>"
+	"<CMD>userLogout</CMD>"
+	"<User>%s</User>"
+	"</xml>"
+};
+
 const char GROUP_LIST_RES[]={
 	"<xml>"
 	"<CMD>GroupList</CMD>"
@@ -245,6 +266,19 @@ xmlChar* xmlGetNodeText(xmlDocPtr doc, xmlNodePtr cur, const char *name)
 	return NULL;
 }
 
+void send_all_user(char *buf, int len)
+{
+	struct list_head *pos;
+	list_for_each(pos, &head)  
+	{
+		pcht = list_entry(pos, Chater, entry);
+		if((send(pcht->pclt->fd, buf, len, 0)) == -1)
+		{
+			LOG_ERR("%s:%d send",__func__,__LINE__);
+		}
+	}
+}
+
 /*聊天消息转发*/
 int transmit_msg(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 {
@@ -329,6 +363,9 @@ int user_login(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 		}
 		else
 			LOG_INFO("%s login success", fromUser);
+
+		sprintf(sendbuf,USER_LOGIN,fromUser);
+		send_all_user(sendbuf, strlen(sendbuf));
 	}
 	return 0;
 }
@@ -357,6 +394,9 @@ int user_logout(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 	{
 		LOG_ERR("%s:%d send",__func__,__LINE__);
 	}
+	
+	sprintf(sendbuf,USER_LOGOUT,fromUser);
+	send_all_user(sendbuf, strlen(sendbuf));
 	return 0;
 }
 
@@ -379,6 +419,12 @@ int user_ReqList(pClient pclt, xmlDocPtr doc, xmlNodePtr cur, xmlChar *fromUser)
 		{
 			LOG_ERR("%s:%d recv",__func__,__LINE__);
 		}
+	}
+	
+	sprintf(sendbuf, LIST_RES_END);
+	if(send(pclt->fd, sendbuf, strlen(sendbuf), 0) < 0)
+	{
+		LOG_ERR("%s:%d send",__func__,__LINE__);
 	}
 	return 0;
 }
